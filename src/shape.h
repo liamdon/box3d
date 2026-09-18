@@ -134,6 +134,12 @@ static inline int b3GetHeightFieldTriangleCount( const b3HeightFieldData* height
 	return 2 * cellCount;
 }
 
+// Voxel field
+b3Triangle b3GetVoxelFieldTriangle( const b3VoxelFieldData* field, int triangleIndex );
+int b3GetVoxelFieldMaterial( const b3VoxelFieldData* field, int triangleIndex );
+int b3GetVoxelFieldTriangleCount( const b3VoxelFieldData* field );
+int b3CollideMoverAndVoxelField( b3PlaneResult* planes, int capacity, const b3VoxelFieldData* field, const b3Capsule* mover );
+
 // Mesh
 b3Triangle b3GetMeshTriangle( const b3Mesh* mesh, int triangleIndex );
 bool b3IsValidMesh( const b3MeshData* meshData );

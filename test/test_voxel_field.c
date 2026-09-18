@@ -3,6 +3,9 @@
 
 #include "test_macros.h"
 
+// b3GetVoxelFieldTriangle is internal
+#include "shape.h"
+
 #include "box3d/box3d.h"
 #include "box3d/collision.h"
 #include "box3d/math_functions.h"
@@ -161,6 +164,255 @@ static int VoxelWave( void )
 	return 0;
 }
 
+// Map a face edge to the triangle that owns it and the edge bits within that triangle. Face edges 0
+// and 1 belong to triangle 0 as edges 1 and 2. Face edges 2 and 3 belong to triangle 1 as edges 2 and 3.
+static b3Triangle GetFaceEdgeTriangle( const b3VoxelFieldData* field, int voxelIndex, int face, int faceEdge, int* concaveBit,
+									   int* inverseBit )
+{
+	static const int concaveBits[4] = { b3_concaveEdge1, b3_concaveEdge2, b3_concaveEdge2, b3_concaveEdge3 };
+	static const int inverseBits[4] = { b3_inverseConcaveEdge1, b3_inverseConcaveEdge2, b3_inverseConcaveEdge2,
+										b3_inverseConcaveEdge3 };
+	int sub = faceEdge < 2 ? 0 : 1;
+	*concaveBit = concaveBits[faceEdge];
+	*inverseBit = inverseBits[faceEdge];
+	return b3GetVoxelFieldTriangle( field, 12 * voxelIndex + 2 * face + sub );
+}
+
+// The corner and edge tables are the whole geometry. Check them against first principles.
+static int VoxelFaceTables( void )
+{
+	// A single solid voxel: every face is exposed and every outer edge is convex.
+	uint8_t voxel = 1;
+	b3VoxelFieldDef def = { 0 };
+	def.voxels = &voxel;
+	def.scale = b3Vec3_one;
+	def.countX = def.countY = def.countZ = 1;
+	b3VoxelFieldData* field = b3CreateVoxelField( &def );
+
+	static const float normals[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
+
+	for ( int face = 0; face < 6; ++face )
+	{
+		for ( int sub = 0; sub < 2; ++sub )
+		{
+			b3Triangle t = b3GetVoxelFieldTriangle( field, 2 * face + sub );
+			b3Vec3 n = b3MakeNormalFromPoints( t.vertices[0], t.vertices[1], t.vertices[2] );
+			ENSURE_SMALL( n.x - normals[face][0], 1e-5f );
+			ENSURE_SMALL( n.y - normals[face][1], 1e-5f );
+			ENSURE_SMALL( n.z - normals[face][2], 1e-5f );
+
+			// Every vertex lies on the face plane
+			for ( int i = 0; i < 3; ++i )
+			{
+				float d = b3Dot( t.vertices[i], n );
+				ENSURE_SMALL( d - b3MaxFloat( 0.0f, b3Dot( (b3Vec3){ 1.0f, 1.0f, 1.0f }, n ) ), 1e-5f );
+			}
+
+			// Both triangles share corner 0
+			ENSURE( t.i1 == b3GetVoxelFieldTriangle( field, 2 * face ).i1 );
+		}
+
+		// Isolated voxel: outer edges convex, diagonal flat
+		b3Triangle t0 = b3GetVoxelFieldTriangle( field, 2 * face );
+		ENSURE( ( t0.flags & b3_concaveEdge1 ) == 0 && ( t0.flags & b3_inverseConcaveEdge1 ) != 0 );
+		ENSURE( ( t0.flags & b3_concaveEdge2 ) == 0 && ( t0.flags & b3_inverseConcaveEdge2 ) != 0 );
+		ENSURE( ( t0.flags & b3_flatEdge3 ) == b3_flatEdge3 );
+
+		b3Triangle t1 = b3GetVoxelFieldTriangle( field, 2 * face + 1 );
+		ENSURE( ( t1.flags & b3_flatEdge1 ) == b3_flatEdge1 );
+		ENSURE( ( t1.flags & b3_concaveEdge2 ) == 0 && ( t1.flags & b3_inverseConcaveEdge2 ) != 0 );
+		ENSURE( ( t1.flags & b3_concaveEdge3 ) == 0 && ( t1.flags & b3_inverseConcaveEdge3 ) != 0 );
+
+		// The diagonal is shared: triangle 0 edge 3 is corners 2 to 0, triangle 1 edge 1 is corners 0 to 2
+		ENSURE( t0.i3 == t1.i2 );
+		ENSURE( t0.i1 == t1.i1 );
+	}
+
+	ENSURE( b3GetVoxelFieldTriangleCount( field ) == 12 );
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
+// Derive the edge neighbor table from the geometry. Make the center voxel of a 3x3x3 field solid
+// along with exactly one neighbor. The face edge that becomes flat must be the one whose two
+// corners lie on the shared boundary with that neighbor.
+static int VoxelEdgeNeighbors( void )
+{
+	static const int offsets[6][3] = { { -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 } };
+
+	for ( int n = 0; n < 6; ++n )
+	{
+		uint8_t voxels[27] = { 0 };
+		int center = 1 + 3 * ( 1 + 3 * 1 );
+		int neighbor = ( 1 + offsets[n][0] ) + 3 * ( ( 1 + offsets[n][1] ) + 3 * ( 1 + offsets[n][2] ) );
+		voxels[center] = 1;
+		voxels[neighbor] = 1;
+
+		b3VoxelFieldDef def = { 0 };
+		def.voxels = voxels;
+		def.scale = b3Vec3_one;
+		def.countX = def.countY = def.countZ = 3;
+		b3VoxelFieldData* field = b3CreateVoxelField( &def );
+
+		// The plane between the center and the neighbor
+		int axis = n >> 1;
+		float boundary = ( n & 1 ) ? 2.0f : 1.0f;
+
+		for ( int face = 0; face < 6; ++face )
+		{
+			if ( face == n )
+			{
+				// Hidden face
+				continue;
+			}
+
+			int flatEdgeCount = 0;
+			for ( int edge = 0; edge < 4; ++edge )
+			{
+				int concaveBit, inverseBit;
+				b3Triangle t = GetFaceEdgeTriangle( field, center, face, edge, &concaveBit, &inverseBit );
+				bool concave = ( t.flags & concaveBit ) != 0;
+				bool inverse = ( t.flags & inverseBit ) != 0;
+
+				// The face edge corners are triangle vertices: face edges 0, 1 are triangle 0 vertices (0, 1) and (1, 2),
+				// face edges 2, 3 are triangle 1 vertices (1, 2) and (2, 0).
+				b3Vec3 c1, c2;
+				if ( edge == 0 )
+				{
+					c1 = t.vertices[0], c2 = t.vertices[1];
+				}
+				else if ( edge == 1 || edge == 2 )
+				{
+					c1 = t.vertices[1], c2 = t.vertices[2];
+				}
+				else
+				{
+					c1 = t.vertices[2], c2 = t.vertices[0];
+				}
+
+				float v1[3] = { c1.x, c1.y, c1.z };
+				float v2[3] = { c2.x, c2.y, c2.z };
+				bool onBoundary = v1[axis] == boundary && v2[axis] == boundary;
+
+				if ( onBoundary )
+				{
+					// Coplanar continuation onto the neighbor's face
+					ENSURE( concave && inverse );
+					flatEdgeCount += 1;
+				}
+				else
+				{
+					// Step down
+					ENSURE( concave == false && inverse );
+				}
+			}
+
+			// The neighbor touches every face along exactly one edge, except the face opposite the
+			// neighbor, which shares nothing with it.
+			int expectedFlatEdgeCount = face == ( n ^ 1 ) ? 0 : 1;
+			ENSURE( flatEdgeCount == expectedFlatEdgeCount );
+		}
+
+		b3DestroyVoxelField( field );
+	}
+
+	return 0;
+}
+
+static int VoxelEdgeFlags( void )
+{
+	// 4x4x4, floor 1 high, plus a wall along x = 3 up to y = 3
+	uint8_t voxels[64] = { 0 };
+	for ( int z = 0; z < 4; ++z )
+	{
+		for ( int x = 0; x < 4; ++x )
+		{
+			voxels[x + 4 * ( 0 + 4 * z )] = 1;
+			if ( x == 3 )
+			{
+				voxels[x + 4 * ( 1 + 4 * z )] = 1;
+				voxels[x + 4 * ( 2 + 4 * z )] = 1;
+			}
+		}
+	}
+
+	b3VoxelFieldDef def = { 0 };
+	def.voxels = voxels;
+	def.scale = b3Vec3_one;
+	def.countX = def.countY = def.countZ = 4;
+	b3VoxelFieldData* field = b3CreateVoxelField( &def );
+
+	// Top face (+y, face 3) of the floor voxel at (1, 0, 1): all four outer edges coplanar with
+	// neighbors, so flat.
+	{
+		int index = 1 + 4 * ( 0 + 4 * 1 );
+		b3Triangle t0 = b3GetVoxelFieldTriangle( field, 12 * index + 2 * 3 );
+		b3Triangle t1 = b3GetVoxelFieldTriangle( field, 12 * index + 2 * 3 + 1 );
+		ENSURE( ( t0.flags & b3_allFlatEdges ) == b3_allFlatEdges );
+		ENSURE( ( t1.flags & b3_allFlatEdges ) == b3_allFlatEdges );
+	}
+
+	// Top face of (2, 0, 1): the +x edge meets the wall, so it is concave. Face 3 edge 2 is the +x
+	// edge, which is triangle 1 edge 2.
+	{
+		int index = 2 + 4 * ( 0 + 4 * 1 );
+		b3Triangle t1 = b3GetVoxelFieldTriangle( field, 12 * index + 2 * 3 + 1 );
+		ENSURE( ( t1.flags & b3_concaveEdge2 ) != 0 );
+		ENSURE( ( t1.flags & b3_inverseConcaveEdge2 ) == 0 );
+	}
+
+	// Top face of (0, 0, 1): the -x edge is the field boundary, so convex. Face 3 edge 0 is the
+	// -x edge, which is triangle 0 edge 1.
+	{
+		int index = 0 + 4 * ( 0 + 4 * 1 );
+		b3Triangle t0 = b3GetVoxelFieldTriangle( field, 12 * index + 2 * 3 );
+		ENSURE( ( t0.flags & b3_concaveEdge1 ) == 0 );
+		ENSURE( ( t0.flags & b3_inverseConcaveEdge1 ) != 0 );
+	}
+
+	// Adjacent top faces share grid corner indices
+	{
+		int a = 1 + 4 * ( 0 + 4 * 1 );
+		int b = 2 + 4 * ( 0 + 4 * 1 );
+		b3Triangle ta = b3GetVoxelFieldTriangle( field, 12 * a + 2 * 3 + 1 ); // corners 0, 2, 3 of a
+		b3Triangle tb = b3GetVoxelFieldTriangle( field, 12 * b + 2 * 3 );	  // corners 0, 1, 2 of b
+
+		// a's corner 3 is (x + 1, y + 1, z) and b's corner 0 is (x', y + 1, z) with x' = x + 1
+		ENSURE( ta.i3 == tb.i1 );
+		ENSURE( ta.vertices[2].x == tb.vertices[0].x );
+		ENSURE( ta.vertices[2].y == tb.vertices[0].y );
+		ENSURE( ta.vertices[2].z == tb.vertices[0].z );
+	}
+
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
+static int VoxelMaterial( void )
+{
+	uint8_t voxels[8] = { 1, 1, 1, 1, 1, 1, 1, 1 };
+	uint8_t materials[8] = { 3, 1, 4, 1, 5, 9, 2, 6 };
+	b3VoxelFieldDef def = { 0 };
+	def.voxels = voxels;
+	def.materialIndices = materials;
+	def.scale = b3Vec3_one;
+	def.countX = def.countY = def.countZ = 2;
+	b3VoxelFieldData* field = b3CreateVoxelField( &def );
+
+	for ( int v = 0; v < 8; ++v )
+	{
+		ENSURE( b3GetVoxelFieldMaterial( field, 12 * v + 7 ) == materials[v] );
+	}
+
+	b3DestroyVoxelField( field );
+
+	def.materialIndices = NULL;
+	field = b3CreateVoxelField( &def );
+	ENSURE( b3GetVoxelFieldMaterial( field, 12 * 5 ) == 0 );
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
 int VoxelFieldTest( void )
 {
 	RUN_SUBTEST( VoxelFieldCreate );
@@ -168,6 +420,10 @@ int VoxelFieldTest( void )
 	RUN_SUBTEST( VoxelFieldBorder );
 	RUN_SUBTEST( VoxelFieldAABB );
 	RUN_SUBTEST( VoxelWave );
+	RUN_SUBTEST( VoxelFaceTables );
+	RUN_SUBTEST( VoxelEdgeNeighbors );
+	RUN_SUBTEST( VoxelEdgeFlags );
+	RUN_SUBTEST( VoxelMaterial );
 
 	return 0;
 }

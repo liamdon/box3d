@@ -44,6 +44,42 @@
 #define B3_VOXEL_FACE_COUNT 6
 #define B3_TRIANGLES_PER_VOXEL 12
 
+// Corner offsets for each face, counter-clockwise viewed from outside
+static const int b3_faceCorners[B3_VOXEL_FACE_COUNT][4][3] = {
+	{ { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 1 }, { 0, 1, 0 } }, // -x
+	{ { 1, 0, 0 }, { 1, 1, 0 }, { 1, 1, 1 }, { 1, 0, 1 } }, // +x
+	{ { 0, 0, 0 }, { 1, 0, 0 }, { 1, 0, 1 }, { 0, 0, 1 } }, // -y
+	{ { 0, 1, 0 }, { 0, 1, 1 }, { 1, 1, 1 }, { 1, 1, 0 } }, // +y
+	{ { 0, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 }, { 1, 0, 0 } }, // -z
+	{ { 0, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 } }, // +z
+};
+
+// Outward normal of each face as a voxel offset
+static const int b3_faceNormals[B3_VOXEL_FACE_COUNT][3] = {
+	{ -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 },
+};
+
+// The voxel across face edge k, which joins corners k and k + 1, as an offset from the voxel.
+// Derived from b3_faceCorners: the offset is the sign of 2 * ( c[k] + c[k + 1] ) - sum( c ) per axis.
+static const int b3_faceEdgeNeighbors[B3_VOXEL_FACE_COUNT][4][3] = {
+	{ { 0, -1, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 0, -1 } }, // -x
+	{ { 0, 0, -1 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, -1, 0 } }, // +x
+	{ { 0, 0, -1 }, { 1, 0, 0 }, { 0, 0, 1 }, { -1, 0, 0 } }, // -y
+	{ { -1, 0, 0 }, { 0, 0, 1 }, { 1, 0, 0 }, { 0, 0, -1 } }, // +y
+	{ { -1, 0, 0 }, { 0, 1, 0 }, { 1, 0, 0 }, { 0, -1, 0 } }, // -z
+	{ { 0, -1, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { -1, 0, 0 } }, // +z
+};
+
+static inline int b3GetVoxelCornerIndex( const b3VoxelFieldData* field, int x, int y, int z )
+{
+	return x + ( field->countX + 1 ) * ( y + ( field->countY + 1 ) * z );
+}
+
+static inline b3Vec3 b3GetVoxelCorner( const b3VoxelFieldData* field, int x, int y, int z )
+{
+	return b3Mul( field->scale, (b3Vec3){ (float)x, (float)y, (float)z } );
+}
+
 b3VoxelFieldData* b3CreateVoxelField( const b3VoxelFieldDef* def )
 {
 	B3_ASSERT( def->voxels != NULL );
@@ -186,4 +222,96 @@ void b3DestroyVoxelField( b3VoxelFieldData* field )
 b3AABB b3ComputeVoxelFieldAABB( const b3VoxelFieldData* shape, b3Transform transform )
 {
 	return b3AABB_Transform( transform, shape->aabb );
+}
+
+// Flags for one outer edge of a face. Looking across the edge the surface either steps down
+// (convex), continues flat, or rises into a wall (concave).
+static int b3GetVoxelEdgeFlags( const b3VoxelFieldData* field, int x, int y, int z, int face, int edge, int concaveBit,
+								int inverseBit )
+{
+	const int* n = b3_faceNormals[face];
+	const int* d = b3_faceEdgeNeighbors[face][edge];
+
+	bool sideSolid = b3IsVoxelSolid( field, x + d[0], y + d[1], z + d[2] );
+	if ( sideSolid == false )
+	{
+		return inverseBit;
+	}
+
+	bool aboveSolid = b3IsVoxelSolid( field, x + d[0] + n[0], y + d[1] + n[1], z + d[2] + n[2] );
+	if ( aboveSolid )
+	{
+		return concaveBit;
+	}
+
+	return concaveBit | inverseBit;
+}
+
+int b3GetVoxelFieldTriangleCount( const b3VoxelFieldData* field )
+{
+	return B3_TRIANGLES_PER_VOXEL * field->countX * field->countY * field->countZ;
+}
+
+b3Triangle b3GetVoxelFieldTriangle( const b3VoxelFieldData* field, int triangleIndex )
+{
+	B3_ASSERT( 0 <= triangleIndex && triangleIndex < b3GetVoxelFieldTriangleCount( field ) );
+
+	int voxelIndex = triangleIndex / B3_TRIANGLES_PER_VOXEL;
+	int face = ( triangleIndex - B3_TRIANGLES_PER_VOXEL * voxelIndex ) >> 1;
+	int sub = triangleIndex & 1;
+
+	int countX = field->countX;
+	int countY = field->countY;
+	int x = voxelIndex % countX;
+	int y = ( voxelIndex / countX ) % countY;
+	int z = voxelIndex / ( countX * countY );
+
+	B3_ASSERT( b3IsVoxelSolid( field, x, y, z ) );
+
+	// Corners 0, 1, 2 or 0, 2, 3
+	int corners[3] = { 0, 1 + sub, 2 + sub };
+	int indices[3];
+
+	b3Triangle triangle;
+	for ( int i = 0; i < 3; ++i )
+	{
+		const int* offset = b3_faceCorners[face][corners[i]];
+		int cx = x + offset[0];
+		int cy = y + offset[1];
+		int cz = z + offset[2];
+		triangle.vertices[i] = b3GetVoxelCorner( field, cx, cy, cz );
+		indices[i] = b3GetVoxelCornerIndex( field, cx, cy, cz );
+	}
+
+	triangle.i1 = indices[0];
+	triangle.i2 = indices[1];
+	triangle.i3 = indices[2];
+
+	if ( sub == 0 )
+	{
+		// Edge 1 is face edge 0, edge 2 is face edge 1, edge 3 is the diagonal
+		triangle.flags = b3GetVoxelEdgeFlags( field, x, y, z, face, 0, b3_concaveEdge1, b3_inverseConcaveEdge1 ) |
+						 b3GetVoxelEdgeFlags( field, x, y, z, face, 1, b3_concaveEdge2, b3_inverseConcaveEdge2 ) | b3_flatEdge3;
+	}
+	else
+	{
+		// Edge 1 is the diagonal, edge 2 is face edge 2, edge 3 is face edge 3
+		triangle.flags = b3_flatEdge1 | b3GetVoxelEdgeFlags( field, x, y, z, face, 2, b3_concaveEdge2, b3_inverseConcaveEdge2 ) |
+						 b3GetVoxelEdgeFlags( field, x, y, z, face, 3, b3_concaveEdge3, b3_inverseConcaveEdge3 );
+	}
+
+	return triangle;
+}
+
+int b3GetVoxelFieldMaterial( const b3VoxelFieldData* field, int triangleIndex )
+{
+	B3_ASSERT( 0 <= triangleIndex && triangleIndex < b3GetVoxelFieldTriangleCount( field ) );
+
+	const uint8_t* materialIndices = b3GetVoxelFieldMaterialIndices( field );
+	if ( materialIndices == NULL )
+	{
+		return 0;
+	}
+
+	return materialIndices[triangleIndex / B3_TRIANGLES_PER_VOXEL];
 }
