@@ -691,7 +691,8 @@ B3_API void b3Body_SetSleepThreshold( b3BodyId bodyId, float sleepThreshold );
 /// Get the sleep threshold, usually in meters per second.
 B3_API float b3Body_GetSleepThreshold( b3BodyId bodyId );
 
-/// Set the continuous collision safety factor. Smaller is safer but can lead to hitching. Recommended range [0.01, 0.5]. Non-dimensional.
+/// Set the continuous collision safety factor. Smaller is safer but can lead to hitching. Recommended range [0.01, 0.5].
+/// Non-dimensional.
 B3_API void b3Body_SetSafetyFactor( b3BodyId bodyId, float safetyFactor );
 
 /// Get the continuous collision safety factor. Non-dimensional.
@@ -800,7 +801,7 @@ B3_API bool b3Body_OverlapShape( b3BodyId bodyId, b3Pos origin, const b3ShapePro
 B3_API int b3Body_CollideMover( b3BodyId bodyId, b3BodyPlaneResult* bodyPlanes, int planeCapacity, b3Pos origin,
 								const b3Capsule* mover, b3QueryFilter filter, b3WorldTransform bodyTransform );
 
-/// Perform a time of impact between a character mover and a body using specified sweep transforms. 
+/// Perform a time of impact between a character mover and a body using specified sweep transforms.
 /// Initial overlap of any shape on the body is ignored. A non-overlapped shape can still be hit.
 /// Only considers convex shapes on the body.
 B3_API b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b3Capsule* mover, b3Vec3 moverTranslation,
@@ -855,6 +856,13 @@ B3_API b3ShapeId b3CreateMeshShape( b3BodyId bodyId, const b3ShapeDef* def, cons
 /// @warning this holds reference to the input height field which must remain valid for the lifetime of this shape
 /// @return the shape id for accessing the shape
 B3_API b3ShapeId b3CreateHeightFieldShape( b3BodyId bodyId, const b3ShapeDef* def, const b3HeightFieldData* heightField );
+
+/// Create a voxel field shape and attach it to a body. The shape definition is fully cloned but the voxel field is not.
+/// Contacts are not created until the next time step.
+/// Voxel fields are only allowed on static bodies.
+/// @warning this holds reference to the input voxel field which must remain valid for the lifetime of this shape
+/// @return the shape id for accessing the shape
+B3_API b3ShapeId b3CreateVoxelFieldShape( b3BodyId bodyId, const b3ShapeDef* def, const b3VoxelFieldData* field );
 
 /// Baked compound shapes are only allowed on static bodies.
 /// Note: runtime compounds are achieved by adding multiple shapes to a body.
@@ -986,6 +994,9 @@ B3_API b3Mesh b3Shape_GetMesh( b3ShapeId shapeId );
 
 /// Get the shape's height field. Asserts the type is correct.
 B3_API const b3HeightFieldData* b3Shape_GetHeightField( b3ShapeId shapeId );
+
+/// Get the shape's voxel field. Asserts the type is correct.
+B3_API const b3VoxelFieldData* b3Shape_GetVoxelField( b3ShapeId shapeId );
 
 /// Allows you to change a shape to be a sphere or update the current sphere.
 /// This does not modify the mass properties.

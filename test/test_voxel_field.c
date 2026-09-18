@@ -793,6 +793,182 @@ static int VoxelMoverPlanes( void )
 	return 0;
 }
 
+static b3BodyId CreateVoxelGround( b3WorldId worldId, b3VoxelFieldData* field, b3Pos position )
+{
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_staticBody;
+	bodyDef.position = position;
+	b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3ShapeId shapeId = b3CreateVoxelFieldShape( bodyId, &shapeDef, field );
+	MAYBE_UNUSED( shapeId );
+	return bodyId;
+}
+
+static int VoxelWorldRest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+
+	// Floor top at world y = 0
+	b3VoxelFieldData* field = MakeFloorField( 10, 4, 10, 2, false );
+	b3BodyId groundId = CreateVoxelGround( worldId, field, (b3Pos){ -5.0f, -2.0f, -5.0f } );
+	MAYBE_UNUSED( groundId );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+
+	bodyDef.position = (b3Pos){ 0.3f, 2.0f, 0.3f };
+	b3BodyId sphereId = b3CreateBody( worldId, &bodyDef );
+	b3Sphere sphere = { b3Vec3_zero, 0.5f };
+	b3CreateSphereShape( sphereId, &shapeDef, &sphere );
+
+	bodyDef.position = (b3Pos){ 2.0f, 2.0f, 2.0f };
+	b3BodyId boxId = b3CreateBody( worldId, &bodyDef );
+	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
+	b3CreateHullShape( boxId, &shapeDef, &box.base );
+
+	bodyDef.position = (b3Pos){ -2.0f, 2.0f, -2.0f };
+	b3BodyId capsuleId = b3CreateBody( worldId, &bodyDef );
+	b3Capsule capsule = { { 0.0f, -0.5f, 0.0f }, { 0.0f, 0.5f, 0.0f }, 0.25f };
+	b3CreateCapsuleShape( capsuleId, &shapeDef, &capsule );
+
+	for ( int i = 0; i < 240; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	}
+
+	b3Pos p = b3Body_GetPosition( sphereId );
+	ENSURE_SMALL( (float)p.y - 0.5f, 0.02f );
+	b3Vec3 v = b3Body_GetLinearVelocity( sphereId );
+	ENSURE_SMALL( v.y, 0.01f );
+
+	p = b3Body_GetPosition( boxId );
+	ENSURE_SMALL( (float)p.y - 0.5f, 0.02f );
+	ENSURE_SMALL( (float)p.x - 2.0f, 0.02f );
+	ENSURE_SMALL( (float)p.z - 2.0f, 0.02f );
+
+	p = b3Body_GetPosition( capsuleId );
+	ENSURE( (float)p.y < 0.8f );
+	ENSURE( (float)p.y > 0.2f );
+
+	b3DestroyWorld( worldId );
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
+// A box slides across internal voxel edges and across the seam between two bordered fields.
+// Ghost collisions would show up as vertical velocity.
+static int VoxelWorldSlideSeam( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+
+	// Two 12x6x12 bordered fields, interior 10 wide, placed side by side along x. Floor 3 high
+	// including the border row, so the interior floor is 2 voxels and its top is at local y = 3.
+	b3VoxelFieldData* left = MakeFloorField( 12, 6, 12, 3, true );
+	b3VoxelFieldData* right = MakeFloorField( 12, 6, 12, 3, true );
+
+	// Interior of the left field spans world x in [-10, 0), the right field [0, 10).
+	// Local interior starts at 1, so the bodies sit at -11 and -1.
+	CreateVoxelGround( worldId, left, (b3Pos){ -11.0f, -3.0f, -6.0f } );
+	CreateVoxelGround( worldId, right, (b3Pos){ -1.0f, -3.0f, -6.0f } );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.position = (b3Pos){ -8.0f, 0.5f, 0.0f };
+	b3BodyId boxId = b3CreateBody( worldId, &bodyDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.baseMaterial.friction = 0.05f;
+	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
+	b3CreateHullShape( boxId, &shapeDef, &box.base );
+
+	// Settle, then push
+	for ( int i = 0; i < 60; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	}
+
+	b3Body_SetLinearVelocity( boxId, (b3Vec3){ 8.0f, 0.0f, 0.0f } );
+
+	float maxVerticalSpeed = 0.0f;
+	float maxHeight = 0.0f;
+	for ( int i = 0; i < 120; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+		b3Vec3 v = b3Body_GetLinearVelocity( boxId );
+		maxVerticalSpeed = b3MaxFloat( maxVerticalSpeed, b3AbsFloat( v.y ) );
+		b3Pos p = b3Body_GetPosition( boxId );
+		maxHeight = b3MaxFloat( maxHeight, (float)p.y );
+	}
+
+	b3Pos p = b3Body_GetPosition( boxId );
+
+	// Crossed the seam at x = 0
+	ENSURE( (float)p.x > 2.0f );
+	ENSURE( maxVerticalSpeed < 0.05f );
+	ENSURE( maxHeight < 0.52f );
+
+	b3DestroyWorld( worldId );
+	b3DestroyVoxelField( left );
+	b3DestroyVoxelField( right );
+	return 0;
+}
+
+// Replacing a chunk under a sleeping body wakes it and it keeps resting on the new surface.
+static int VoxelWorldReplaceChunk( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+
+	b3VoxelFieldData* field = MakeFloorField( 10, 6, 10, 3, false );
+	b3BodyDef groundDef = b3DefaultBodyDef();
+	groundDef.type = b3_staticBody;
+	groundDef.position = (b3Pos){ -5.0f, -3.0f, -5.0f };
+	b3BodyId groundId = b3CreateBody( worldId, &groundDef );
+	b3ShapeDef groundShapeDef = b3DefaultShapeDef();
+	b3ShapeId groundShapeId = b3CreateVoxelFieldShape( groundId, &groundShapeDef, field );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.position = (b3Pos){ 0.5f, 1.0f, 0.5f };
+	b3BodyId boxId = b3CreateBody( worldId, &bodyDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
+	b3CreateHullShape( boxId, &shapeDef, &box.base );
+
+	for ( int i = 0; i < 400; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	}
+	ENSURE( b3Body_IsAwake( boxId ) == false );
+
+	// Lower the floor by one voxel under everything and swap the shape
+	b3VoxelFieldData* lowered = MakeFloorField( 10, 6, 10, 2, false );
+	b3DestroyShape( groundShapeId, false );
+	b3DestroyVoxelField( field );
+	groundShapeDef.invokeContactCreation = true;
+	groundShapeId = b3CreateVoxelFieldShape( groundId, &groundShapeDef, lowered );
+	ENSURE( b3Shape_IsValid( groundShapeId ) );
+	ENSURE( b3Shape_GetVoxelField( groundShapeId ) == lowered );
+
+	b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	ENSURE( b3Body_IsAwake( boxId ) == true );
+
+	for ( int i = 0; i < 240; ++i )
+	{
+		b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	}
+
+	b3Pos p = b3Body_GetPosition( boxId );
+	ENSURE_SMALL( (float)p.y + 0.5f, 0.02f );
+
+	b3DestroyWorld( worldId );
+	b3DestroyVoxelField( lowered );
+	return 0;
+}
+
 int VoxelFieldTest( void )
 {
 	RUN_SUBTEST( VoxelFieldCreate );
@@ -811,6 +987,9 @@ int VoxelFieldTest( void )
 	RUN_SUBTEST( VoxelShapeCastBruteForce );
 	RUN_SUBTEST( VoxelOverlapAtSurface );
 	RUN_SUBTEST( VoxelMoverPlanes );
+	RUN_SUBTEST( VoxelWorldRest );
+	RUN_SUBTEST( VoxelWorldSlideSeam );
+	RUN_SUBTEST( VoxelWorldReplaceChunk );
 
 	return 0;
 }
