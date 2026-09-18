@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2025 Erin Catto
 // SPDX-License-Identifier: MIT
 
+#include "gfx/debug_adapter.h"
+#include "gfx/draw.h"
 #include "human.h"
 #include "mesh_loader.h"
 #include "sample.h"
-#include "gfx/draw.h"
-
-#include "gfx/debug_adapter.h"
 
 #include "box3d/box3d.h"
 
@@ -220,7 +219,7 @@ public:
 
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		b3BodyId groundId = b3CreateBody( m_worldId, &bodyDef );
-		m_boxMesh = b3CreateBoxMesh( {0.0f, -1.0f, 0.0f}, { 50.0f, 1.0f, 50.0f }, true );
+		m_boxMesh = b3CreateBoxMesh( { 0.0f, -1.0f, 0.0f }, { 50.0f, 1.0f, 50.0f }, true );
 		m_scale = b3Vec3_one;
 
 		b3ShapeDef shapeDef = b3DefaultShapeDef();
@@ -231,7 +230,7 @@ public:
 
 		m_shapeType = ShapeType::cylinder;
 		m_bodyId = b3_nullBodyId;
-		//m_cylinderHull = b3CreateCylinder( 0.5f, 0.2f, 0.0f, 15 );
+		// m_cylinderHull = b3CreateCylinder( 0.5f, 0.2f, 0.0f, 15 );
 		m_cylinderHull = b3CreateCylinder( 0.3f, 0.15f, 0.0f, 32 );
 
 		m_stepWhilePaused = false;
@@ -390,7 +389,6 @@ public:
 		if ( m_context->restart == false )
 		{
 			m_camera->SetView( 45.0f, 30.0f, 6.0f, b3Pos_zero );
-			
 		}
 
 		AddGroundBox( 20.0f );
@@ -1002,6 +1000,178 @@ public:
 
 static int sampleHeightField = RegisterSample( "Mesh", "Height Field", HeightField::Create );
 
+// Four voxel field tiles with a shared border. Bodies slide across the seams between tiles
+// without catching when the border is enabled.
+class VoxelField : public Sample
+{
+public:
+	static Sample* Create( SampleContext* context )
+	{
+		return new VoxelField( context );
+	}
+
+	explicit VoxelField( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			m_camera->SetView( 30.0f, 25.0f, 45.0f, b3Pos_zero );
+		}
+
+		m_tileSize = 16;
+		m_height = 12;
+		m_border = true;
+
+		for ( int i = 0; i < 4; ++i )
+		{
+			m_tileIds[i] = {};
+			m_fields[i] = nullptr;
+		}
+
+		CreateScene();
+	}
+
+	~VoxelField() override
+	{
+		DestroyFields();
+	}
+
+	void DestroyFields()
+	{
+		for ( int i = 0; i < 4; ++i )
+		{
+			if ( m_fields[i] != nullptr )
+			{
+				b3DestroyVoxelField( m_fields[i] );
+				m_fields[i] = nullptr;
+			}
+		}
+	}
+
+	void CreateScene()
+	{
+		for ( int i = 0; i < 4; ++i )
+		{
+			if ( B3_IS_NULL( m_tileIds[i] ) == false )
+			{
+				b3DestroyBody( m_tileIds[i] );
+				m_tileIds[i] = {};
+			}
+		}
+
+		DestroyFields();
+
+		// Two by two tiles with an interior of m_tileSize voxels. With a border each tile also
+		// stores one layer of its neighbors so the seams have no exposed faces.
+		int border = m_border ? 1 : 0;
+		int count = m_tileSize + 2 * border;
+		b3Vec3 scale = b3Vec3_one;
+
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+
+		for ( int tz = 0; tz < 2; ++tz )
+		{
+			for ( int tx = 0; tx < 2; ++tx )
+			{
+				int i = tx + 2 * tz;
+				m_fields[i] =
+					b3CreateVoxelWave( count, m_height, count, tx * m_tileSize, tz * m_tileSize, scale, 0.25f, 0.4f, m_border );
+
+				// Place the interior of each tile so the tiles abut and the whole terrain is centered
+				bodyDef.position = { (float)( tx * m_tileSize - m_tileSize - border ), -0.5f * (float)m_height,
+									 (float)( tz * m_tileSize - m_tileSize - border ) };
+				m_tileIds[i] = b3CreateBody( m_worldId, &bodyDef );
+				b3CreateVoxelFieldShape( m_tileIds[i], &shapeDef, m_fields[i] );
+			}
+		}
+	}
+
+	void SpawnBodies()
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		shapeDef.baseMaterial.friction = 0.3f;
+
+		for ( int i = 0; i < 40; ++i )
+		{
+			bodyDef.position = { -10.0f + 0.5f * (float)i, 0.5f * (float)m_height + 4.0f + 0.3f * (float)( i % 5 ),
+								 -4.0f + 0.4f * (float)( i % 7 ) };
+			bodyDef.linearVelocity = { 0.0f, 0.0f, 3.0f };
+			b3BodyId bodyId = b3CreateBody( m_worldId, &bodyDef );
+
+			if ( i % 3 == 0 )
+			{
+				b3Sphere sphere = { b3Vec3_zero, 0.4f };
+				b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+			}
+			else if ( i % 3 == 1 )
+			{
+				b3Capsule capsule = { { 0.0f, -0.3f, 0.0f }, { 0.0f, 0.3f, 0.0f }, 0.3f };
+				b3CreateCapsuleShape( bodyId, &shapeDef, &capsule );
+			}
+			else
+			{
+				b3BoxHull box = b3MakeBoxHull( 0.4f, 0.4f, 0.4f );
+				b3CreateHullShape( bodyId, &shapeDef, &box.base );
+			}
+		}
+	}
+
+	bool DrawControls() override
+	{
+		ImGui::PushItemWidth( 6.0f * ImGui::GetFontSize() );
+
+		if ( ImGui::SliderInt( "tile size", &m_tileSize, 4, 64 ) )
+		{
+			CreateScene();
+		}
+
+		if ( ImGui::SliderInt( "height", &m_height, 4, 32 ) )
+		{
+			CreateScene();
+		}
+
+		if ( ImGui::Checkbox( "border", &m_border ) )
+		{
+			CreateScene();
+		}
+
+		if ( ImGui::Button( "spawn" ) )
+		{
+			SpawnBodies();
+		}
+
+		ImGui::PopItemWidth();
+		return true;
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		int byteCount = 0;
+		int solidCount = 0;
+		for ( int i = 0; i < 4; ++i )
+		{
+			byteCount += m_fields[i]->byteCount;
+			solidCount += m_fields[i]->solidCount;
+		}
+
+		DrawTextLine( "4 tiles, %d solid voxels, %d bytes, border %s", solidCount, byteCount, m_border ? "on" : "off" );
+	}
+
+	b3BodyId m_tileIds[4];
+	b3VoxelFieldData* m_fields[4];
+	int m_tileSize;
+	int m_height;
+	bool m_border;
+};
+
+static int sampleVoxelField = RegisterSample( "Mesh", "Voxel Field", VoxelField::Create );
+
 static float ComputeInternalSurfaceArea( const b3MeshData* data )
 {
 	const b3MeshNode* nodes = b3GetMeshNodes( data );
@@ -1562,11 +1732,11 @@ public:
 			b3HullData* cylinderHull = b3CreateCylinder( 1.0f, 0.25f, 0.0f, 8 );
 
 			b3Pos positions[6] = {
-				{ 0.0f, -10.2f, 0.0f }, { 0.0f, 9.2f, 0.0f }, { -9.8f, 0.0f, 0.0f },
-				{ 9.8f, 0.0f, 0.0f }, { 0.0f, 0.0f, -9.8f }, { 0.0f, 0.0f, 9.8f },
+				{ 0.0f, -10.2f, 0.0f }, { 0.0f, 9.2f, 0.0f },  { -9.8f, 0.0f, 0.0f },
+				{ 9.8f, 0.0f, 0.0f },	{ 0.0f, 0.0f, -9.8f }, { 0.0f, 0.0f, 9.8f },
 			};
 
-			for (int i = 0; i < 6; ++i)
+			for ( int i = 0; i < 6; ++i )
 			{
 				bodyDef.position = positions[i];
 				b3BodyId bodyId = b3CreateBody( m_worldId, &bodyDef );
@@ -1577,15 +1747,13 @@ public:
 		}
 
 		{
-			b3Capsule capsule ={{0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, 0.25f};
+			b3Capsule capsule = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 0.25f };
 			b3Pos positions[8] = {
-				{ 0.0f, -10.2f, 2.0f }, { 0.0f, 9.2f, 2.0f }, 
-				{ 0.0f, -9.9f, 4.0f }, { 0.0f, 8.9f, 4.0f }, 
-				{ -9.8f, 2.0f, 0.0f },
-				{ 9.8f, 2.0f, 0.0f }, { 0.0f, 2.0f, -9.8f }, { 0.0f, 2.0f, 9.8f },
+				{ 0.0f, -10.2f, 2.0f }, { 0.0f, 9.2f, 2.0f }, { 0.0f, -9.9f, 4.0f }, { 0.0f, 8.9f, 4.0f },
+				{ -9.8f, 2.0f, 0.0f },	{ 9.8f, 2.0f, 0.0f }, { 0.0f, 2.0f, -9.8f }, { 0.0f, 2.0f, 9.8f },
 			};
 
-			for (int i = 0; i < 8; ++i)
+			for ( int i = 0; i < 8; ++i )
 			{
 				bodyDef.position = positions[i];
 				b3BodyId bodyId = b3CreateBody( m_worldId, &bodyDef );

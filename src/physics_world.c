@@ -652,8 +652,8 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		// Contact recycling optimization. Please cite this library if you use this optimization.
 		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
 		// However, this allows larger relative motion and has fewer tuning parameters (just one).
-		if ( isFast == false && recycleDistance > 0.0f &&
-			 ( contact->flags & b3_relativeTransformValid ) && ( contact->flags & b3_contactRecycleFlag ) )
+		if ( isFast == false && recycleDistance > 0.0f && ( contact->flags & b3_relativeTransformValid ) &&
+			 ( contact->flags & b3_contactRecycleFlag ) )
 		{
 			// The scalar part of b3InvMulQuat is just the quaternion dot product.
 			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
@@ -1344,6 +1344,10 @@ static bool DrawQueryCallback( int proxyId, uint64_t userData, void* context )
 					debugShape.sphere = &shape->sphere;
 					shape->userShape = world->createDebugShape( &debugShape, world->userDebugShapeContext );
 					break;
+				case b3_voxelShape:
+					debugShape.voxelField = shape->voxelField;
+					shape->userShape = world->createDebugShape( &debugShape, world->userDebugShapeContext );
+					break;
 				default:
 					B3_ASSERT( false );
 					break;
@@ -1440,7 +1444,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
 				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
 				draw->DrawTransformFcn( transform, draw->context );
 
-				if (body->type == b3_dynamicBody)
+				if ( body->type == b3_dynamicBody )
 				{
 					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
 					b3Pos p = b3TransformWorldPoint( transform, offset );
@@ -4053,6 +4057,15 @@ void b3ValidateContacts( b3World* world )
 				else if ( shapeA->type == b3_heightShape )
 				{
 					int triangleCount = b3GetHeightFieldTriangleCount( shapeA->heightField );
+					for ( int i = 0; i < cacheCount; ++i )
+					{
+						int triangleIndex = contact->meshContact.triangleCache.data[i].triangleIndex;
+						B3_ASSERT( 0 <= triangleIndex && triangleIndex < triangleCount );
+					}
+				}
+				else if ( shapeA->type == b3_voxelShape )
+				{
+					int triangleCount = b3GetVoxelFieldTriangleCount( shapeA->voxelField );
 					for ( int i = 0; i < cacheCount; ++i )
 					{
 						int triangleIndex = contact->meshContact.triangleCache.data[i].triangleIndex;

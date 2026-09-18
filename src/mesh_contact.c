@@ -72,9 +72,21 @@ static int b3QueryHeightFieldTriangles( int* indices, int capacity, const b3Heig
 	return context.count;
 }
 
+static int b3QueryVoxelFieldTriangles( int* indices, int capacity, const b3VoxelFieldData* field, b3AABB bounds )
+{
+	b3TriangleQueryContext context = {
+		.indices = indices,
+		.capacity = capacity,
+		.count = 0,
+	};
+
+	b3QueryVoxelField( field, bounds, b3CollectTriangleIndicesCallback, &context );
+	return context.count;
+}
+
 static void b3RefreshCache( b3Contact* contact, const b3Shape* shapeA, b3WorldTransform xfA, const b3AABB* bounds )
 {
-	B3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );
+	B3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape || shapeA->type == b3_voxelShape );
 
 	b3MeshContact* meshContact = &contact->meshContact;
 
@@ -113,10 +125,14 @@ static void b3RefreshCache( b3Contact* contact, const b3Shape* shapeA, b3WorldTr
 	{
 		triangleCount = b3QueryMeshTriangles( triangleIndices, triangleCapacity, &shapeA->mesh, localBounds );
 	}
+	else if ( shapeA->type == b3_heightShape )
+	{
+		triangleCount = b3QueryHeightFieldTriangles( triangleIndices, triangleCapacity, shapeA->heightField, localBounds );
+	}
 	else
 	{
-		B3_ASSERT( shapeA->type == b3_heightShape );
-		triangleCount = b3QueryHeightFieldTriangles( triangleIndices, triangleCapacity, shapeA->heightField, localBounds );
+		B3_ASSERT( shapeA->type == b3_voxelShape );
+		triangleCount = b3QueryVoxelFieldTriangles( triangleIndices, triangleCapacity, shapeA->voxelField, localBounds );
 	}
 
 	if ( triangleCount == triangleCapacity )
@@ -527,7 +543,7 @@ typedef struct b3Cluster
 bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA, const int* materialMap,
 							 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, bool isFast, b3Arena arena )
 {
-	B3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape );
+	B3_ASSERT( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape || shapeA->type == b3_voxelShape );
 	B3_UNUSED( workerIndex );
 	B3_UNUSED( isFast );
 	B3_UNUSED( materialMap );
@@ -587,10 +603,14 @@ bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact
 		{
 			triangle = b3GetMeshTriangle( &shapeA->mesh, triangleIndex );
 		}
+		else if ( shapeA->type == b3_heightShape )
+		{
+			triangle = b3GetHeightFieldTriangle( shapeA->heightField, triangleIndex );
+		}
 		else
 		{
-			B3_ASSERT( shapeA->type == b3_heightShape );
-			triangle = b3GetHeightFieldTriangle( shapeA->heightField, triangleIndex );
+			B3_ASSERT( shapeA->type == b3_voxelShape );
+			triangle = b3GetVoxelFieldTriangle( shapeA->voxelField, triangleIndex );
 		}
 
 		// Transform triangle into the shape frame
@@ -1098,12 +1118,12 @@ bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact
 		float restitution = 0.0f;
 		float sampleCount = 0.0f;
 
-		const uint8_t* materialIndices;
+		const uint8_t* materialIndices = NULL;
 		if ( shapeA->type == b3_meshShape )
 		{
 			materialIndices = b3GetMeshMaterialIndices( shapeA->mesh.data );
 		}
-		else
+		else if ( shapeA->type == b3_heightShape )
 		{
 			materialIndices = b3GetHeightFieldMaterialIndices( shapeA->heightField );
 		}
@@ -1125,9 +1145,13 @@ bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact
 						materialIndex = materialMap[materialIndex];
 					}
 				}
-				else
+				else if ( shapeA->type == b3_heightShape )
 				{
 					materialIndex = materialIndices[triangleIndex >> 1];
+				}
+				else
+				{
+					materialIndex = b3GetVoxelFieldMaterial( shapeA->voxelField, triangleIndex );
 				}
 
 				materialIndex = b3ClampInt( materialIndex, 0, shapeA->materialCount - 1 );

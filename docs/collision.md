@@ -216,6 +216,47 @@ Destroy the height field after the shape referencing it has been destroyed:
 b3DestroyHeightField(hf);
 ```
 
+### Voxel Fields
+
+Voxel fields describe block worlds as a grid of unit cubes. Like height fields,
+they are only valid on static bodies. Only the faces of solid voxels that touch
+empty space collide, and edges between coplanar faces never generate contacts,
+so bodies slide cleanly across a flat voxel floor.
+
+```c
+b3VoxelFieldDef def = {0};
+def.voxels          = occupancy;   // uint8_t[countX * countY * countZ], non-zero is solid
+def.materialIndices = NULL;        // optional uint8_t per voxel into shapeDef.materials
+def.scale           = (b3Vec3){1.0f, 1.0f, 1.0f};
+def.countX          = 34;
+def.countY          = 34;
+def.countZ          = 34;
+def.hasBorder       = true;
+
+b3VoxelFieldData* field = b3CreateVoxelField(&def);
+b3ShapeId id = b3CreateVoxelFieldShape(bodyId, &shapeDef, field);
+```
+
+The voxel index is `x + countX * (y + countY * z)` and the local origin is the
+corner of voxel `(0, 0, 0)`.
+
+Voxel fields have no internal acceleration structure. Keep each field chunk
+sized, around 16 to 64 voxels per axis, and tile fields to build large worlds.
+With `hasBorder` set, the outermost layer of voxels never collides and only
+hides the faces of its neighbors. Fill the border with the adjacent fields'
+voxels so seams between fields do not catch sliding bodies.
+
+Voxel fields are immutable. To edit a block world, rebuild the field for the
+affected chunk, destroy the old shape, and create a new one. Set
+`invokeContactCreation` on the shape definition so the replacement finds
+resting bodies on the next step.
+
+Destroy the voxel field after the shape referencing it has been destroyed:
+
+```c
+b3DestroyVoxelField(field);
+```
+
 ### Compound Shapes
 
 A compound shape aggregates spheres, capsules, hulls, and meshes into a single
@@ -243,7 +284,7 @@ bool hit = b3OverlapHull(&myHull, shapeTransform, &proxy);
 ```
 
 The same pattern works with `b3OverlapSphere`, `b3OverlapCapsule`,
-`b3OverlapMesh`, and `b3OverlapHeightField`.
+`b3OverlapMesh`, `b3OverlapHeightField`, and `b3OverlapVoxelField`.
 
 ### Ray Cast
 
@@ -268,7 +309,8 @@ if (output.hit)
 ```
 
 Per-shape ray cast functions: `b3RayCastSphere`, `b3RayCastCapsule`,
-`b3RayCastHull`, `b3RayCastMesh`, `b3RayCastHeightField`, `b3RayCastCompound`.
+`b3RayCastHull`, `b3RayCastMesh`, `b3RayCastHeightField`, `b3RayCastVoxelField`,
+`b3RayCastCompound`.
 All operate in the shape's local space. Use `b3IsValidRay` to validate input
 before calling.
 
@@ -301,7 +343,7 @@ if (output.hit)
 
 Per-shape cast functions: `b3ShapeCastSphere`, `b3ShapeCastCapsule`,
 `b3ShapeCastHull`, `b3ShapeCastMesh`, `b3ShapeCastHeightField`,
-`b3ShapeCastCompound`.
+`b3ShapeCastVoxelField`, `b3ShapeCastCompound`.
 
 For the most general form — sweeping one proxy against another — use
 `b3ShapeCast` with a `b3ShapeCastPairInput`. All shape cast functions call this

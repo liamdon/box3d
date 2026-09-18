@@ -245,6 +245,69 @@ static int MidStreamContacts( void )
 	return 0;
 }
 
+// Mid-stream snapshot with a body resting on a voxel field. The voxel blob rides the snapshot
+// registry and the mesh contact cache must replay exactly.
+static int MidStreamVoxelField( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+
+	b3World_SetGravity( worldId, (b3Vec3){ 0.0f, -10.0f, 0.0f } );
+
+	b3VoxelFieldData* field = b3CreateVoxelWave( 12, 6, 12, 0, 0, (b3Vec3){ 1.0f, 1.0f, 1.0f }, 0.5f, 0.7f, true );
+	ENSURE( field != NULL );
+
+	{
+		b3BodyDef groundDef = b3DefaultBodyDef();
+		groundDef.type = b3_staticBody;
+		groundDef.position = (b3Pos){ -6.0f, -6.0f, -6.0f };
+		b3BodyId groundId = b3CreateBody( worldId, &groundDef );
+		b3ShapeDef groundShape = b3DefaultShapeDef();
+		b3ShapeId shapeId = b3CreateVoxelFieldShape( groundId, &groundShape, field );
+		ENSURE( b3Shape_IsValid( shapeId ) );
+	}
+
+	b3ShapeDef dynamicShape = b3DefaultShapeDef();
+	dynamicShape.density = 1.0f;
+
+	for ( int i = 0; i < 3; ++i )
+	{
+		b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
+
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ (float)( i * 2 ) - 2.0f, 5.0f, 0.0f };
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		b3CreateHullShape( bodyId, &dynamicShape, &box.base );
+	}
+
+	float timeStep = 1.0f / 60.0f;
+	int subStepCount = 4;
+
+	for ( int i = 0; i < 60; ++i )
+	{
+		b3World_Step( worldId, timeStep, subStepCount );
+	}
+
+	b3Recording* rec = b3CreateRecording( 0 );
+	ENSURE( rec != NULL );
+	b3World_StartRecording( worldId, rec );
+
+	for ( int i = 0; i < 30; ++i )
+	{
+		b3World_Step( worldId, timeStep, subStepCount );
+	}
+
+	b3World_StopRecording( worldId );
+	b3DestroyWorld( worldId );
+	b3DestroyVoxelField( field );
+
+	ENSURE( b3ValidateReplay( b3Recording_GetData( rec ), b3Recording_GetSize( rec ), 1 ) );
+
+	b3DestroyRecording( rec );
+	return 0;
+}
+
 // Record a scene with hull boxes settling on a ground plane, create a player, step to
 // the end recording per-frame world hashes, then seek backward to several frames and
 // verify each reproduces the recorded hash exactly.
@@ -1148,6 +1211,16 @@ static int AllOps( void )
 	b3ShapeDef hfShapeDef = b3DefaultShapeDef();
 	b3CreateHeightFieldShape( hfBodyId, &hfShapeDef, hf );
 
+	b3BodyDef vfBodyDef = b3DefaultBodyDef();
+	vfBodyDef.type = b3_staticBody;
+	vfBodyDef.position = (b3Pos){ 0.0f, 0.0f, -20.0f };
+	b3BodyId vfBodyId = b3CreateBody( worldId, &vfBodyDef );
+	b3VoxelFieldData* vf = b3CreateVoxelWave( 6, 4, 6, 0, 0, (b3Vec3){ 1.0f, 1.0f, 1.0f }, 0.7f, 0.9f, false );
+	ENSURE( vf != NULL );
+	b3ShapeDef vfShapeDef = b3DefaultShapeDef();
+	b3ShapeId vfShapeId = b3CreateVoxelFieldShape( vfBodyId, &vfShapeDef, vf );
+	ENSURE( b3Shape_IsValid( vfShapeId ) );
+
 	b3BodyDef compoundBodyDef = b3DefaultBodyDef();
 	compoundBodyDef.type = b3_staticBody;
 	compoundBodyDef.position = (b3Pos){ 30.0f, 0.0f, 0.0f };
@@ -1499,6 +1572,7 @@ static int AllOps( void )
 	b3DestroyMesh( meshData );
 	b3DestroyMesh( swapMeshData );
 	b3DestroyHeightField( hf );
+	b3DestroyVoxelField( vf );
 	b3DestroyCompound( compound );
 
 	const uint8_t* recData = b3Recording_GetData( rec );
@@ -2125,6 +2199,7 @@ int RecordingTest( void )
 	RUN_SUBTEST( HullDedup );
 	RUN_SUBTEST( MidStreamNoContacts );
 	RUN_SUBTEST( MidStreamContacts );
+	RUN_SUBTEST( MidStreamVoxelField );
 	RUN_SUBTEST( StagedStepCreationPose );
 	RUN_SUBTEST( ScrubBackward );
 	RUN_SUBTEST( SeekWithHull );

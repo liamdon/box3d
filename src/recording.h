@@ -52,7 +52,8 @@ typedef struct b3World b3World;
 
 // Minor tracks op-stream additions that keep the 48 byte header shape.
 // Minor version 6 moved the broad phase to the tree against tree pair traversal
-#define B3_REC_VERSION_MINOR 6
+// Minor version 7 added the voxel field shape
+#define B3_REC_VERSION_MINOR 7
 
 // File header, fixed 48 bytes. Contains the registry locator so the player
 // can load geometry before replaying any ops.
@@ -92,6 +93,7 @@ typedef enum b3GeometryKind
 	b3_geometryMesh,
 	b3_geometryHeightField,
 	b3_geometryCompound,
+	b3_geometryVoxelField,
 } b3GeometryKind;
 
 // One entry per unique geometry blob. id == index in the entries array.
@@ -372,6 +374,7 @@ uint32_t b3RecInternHull( b3Recording* rec, const b3HullData* hull );
 uint32_t b3RecInternMesh( b3Recording* rec, const b3MeshData* mesh );
 uint32_t b3RecInternHeightField( b3Recording* rec, const b3HeightFieldData* hf );
 uint32_t b3RecInternCompound( b3Recording* rec, const b3CompoundData* compound );
+uint32_t b3RecInternVoxelField( b3Recording* rec, const b3VoxelFieldData* field );
 
 // Lifecycle engine-side hooks
 void b3StartRecordingIntoBuffer( b3World* world, b3Recording* recording );

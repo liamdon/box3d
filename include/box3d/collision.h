@@ -423,6 +423,54 @@ B3_API b3HeightFieldData* b3LoadHeightField( const char* fileName );
 /**@}*/ // height_field
 
 /**
+ * @addtogroup voxel_field
+ * @{
+ */
+
+/// Get read only voxel occupancy bits. One bit per voxel.
+B3_INLINE const uint8_t* b3GetVoxelFieldBits( const b3VoxelFieldData* field )
+{
+	return (const uint8_t*)( (intptr_t)field + field->bitsOffset );
+}
+
+/// Get read only material indices. One uint8_t per voxel. Returns NULL if the field has no materials.
+B3_INLINE const uint8_t* b3GetVoxelFieldMaterialIndices( const b3VoxelFieldData* field )
+{
+	if ( field->materialOffset == 0 )
+	{
+		return NULL;
+	}
+
+	return (const uint8_t*)( (intptr_t)field + field->materialOffset );
+}
+
+/// Is the voxel solid? Voxels outside the field are empty.
+B3_INLINE bool b3IsVoxelSolid( const b3VoxelFieldData* field, int x, int y, int z )
+{
+	if ( x < 0 || y < 0 || z < 0 || x >= field->countX || y >= field->countY || z >= field->countZ )
+	{
+		return false;
+	}
+
+	int index = x + field->countX * ( y + field->countY * z );
+	const uint8_t* bits = b3GetVoxelFieldBits( field );
+	return ( bits[index >> 3] & ( 1 << ( index & 7 ) ) ) != 0;
+}
+
+/// Create a generic voxel field.
+B3_API b3VoxelFieldData* b3CreateVoxelField( const b3VoxelFieldDef* def );
+
+/// Create a wave as a voxel field. The offsets shift the wave so that fields created with
+/// adjacent offsets tile seamlessly.
+B3_API b3VoxelFieldData* b3CreateVoxelWave( int countX, int countY, int countZ, int offsetX, int offsetZ, b3Vec3 scale,
+											float frequencyX, float frequencyZ, bool hasBorder );
+
+/// Destroy a voxel field.
+B3_API void b3DestroyVoxelField( b3VoxelFieldData* field );
+
+/**@}*/ // voxel_field
+
+/**
  * @addtogroup compound
  * @{
  */
@@ -493,6 +541,9 @@ B3_API b3AABB b3ComputeMeshAABB( const b3MeshData* shape, b3Transform transform,
 /// Compute the bounding box of a transformed height-field
 B3_API b3AABB b3ComputeHeightFieldAABB( const b3HeightFieldData* shape, b3Transform transform );
 
+/// Compute the bounding box of a transformed voxel field
+B3_API b3AABB b3ComputeVoxelFieldAABB( const b3VoxelFieldData* shape, b3Transform transform );
+
 /// Compute the bounding box of a compound
 B3_API b3AABB b3ComputeCompoundAABB( const b3CompoundData* shape, b3Transform transform );
 
@@ -524,6 +575,9 @@ B3_API bool b3OverlapMesh( const b3Mesh* shape, b3Transform shapeTransform, cons
 /// Overlap shape versus sphere
 B3_API bool b3OverlapSphere( const b3Sphere* shape, b3Transform shapeTransform, const b3ShapeProxy* proxy );
 
+/// Overlap shape versus voxel field
+B3_API bool b3OverlapVoxelField( const b3VoxelFieldData* shape, b3Transform shapeTransform, const b3ShapeProxy* proxy );
+
 /// Ray cast versus sphere in local space. A zero length ray is a point query. Initial overlap
 /// reports a hit at the ray origin with zero fraction and zero normal.
 B3_API b3CastOutput b3RayCastSphere( const b3Sphere* shape, const b3RayCastInput* input );
@@ -550,6 +604,10 @@ B3_API b3CastOutput b3RayCastMesh( const b3Mesh* shape, const b3RayCastInput* in
 /// Ray cast versus height field in local space. A thin surface with no interior, so there is no overlap case.
 B3_API b3CastOutput b3RayCastHeightField( const b3HeightFieldData* shape, const b3RayCastInput* input );
 
+/// Ray cast versus voxel field in local space. Only exposed faces are hit. A ray starting inside solid voxels
+/// passes through them and exits without a hit.
+B3_API b3CastOutput b3RayCastVoxelField( const b3VoxelFieldData* shape, const b3RayCastInput* input );
+
 /// Shape cast versus a sphere. Initial overlap is treated as a miss.
 B3_API b3CastOutput b3ShapeCastSphere( const b3Sphere* shape, const b3ShapeCastInput* input );
 
@@ -568,6 +626,9 @@ B3_API b3CastOutput b3ShapeCastMesh( const b3Mesh* shape, const b3ShapeCastInput
 /// Shape cast versus a height field. Initial overlap is treated as a miss.
 B3_API b3CastOutput b3ShapeCastHeightField( const b3HeightFieldData* shape, const b3ShapeCastInput* input );
 
+/// Shape cast versus a voxel field. Only exposed faces are hit. Initial overlap is treated as a miss.
+B3_API b3CastOutput b3ShapeCastVoxelField( const b3VoxelFieldData* shape, const b3ShapeCastInput* input );
+
 /// Query callback.
 typedef bool b3MeshQueryFcn( b3Vec3 a, b3Vec3 b, b3Vec3 c, int triangleIndex, void* context );
 
@@ -584,6 +645,14 @@ B3_API void b3QueryMesh( const b3Mesh* mesh, const b3AABB bounds, b3MeshQueryFcn
 /// @param fcn a user function to collect triangles
 /// @param context the context sent to the user function.
 B3_API void b3QueryHeightField( const b3HeightFieldData* heightField, b3AABB bounds, b3MeshQueryFcn* fcn, void* context );
+
+/// Query a voxel field for exposed faces overlapping a bounding box in local space. Each face yields two triangles
+/// with increasing triangle indices. Return false from the callback to stop the query.
+/// @param field the voxel field to query
+/// @param bounds the bounding box in local space
+/// @param fcn a user function to collect triangles
+/// @param context the context sent to the user function.
+B3_API void b3QueryVoxelField( const b3VoxelFieldData* field, b3AABB bounds, b3MeshQueryFcn* fcn, void* context );
 
 /// Compute the closest points between two shapes represented as point clouds.
 /// b3SimplexCache cache is input/output. On the first call set b3SimplexCache.count to zero.

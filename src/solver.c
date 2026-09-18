@@ -527,8 +527,8 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext* 
 		// Store this to avoid double computation in the case there is no impact event
 		fastShape->aabb = box2;
 
-		// No continuous collision for meshes
-		if ( fastShape->type == b3_meshShape || fastShape->type == b3_heightShape )
+		// No continuous collision for meshes, height fields, or voxel fields
+		if ( fastShape->type == b3_meshShape || fastShape->type == b3_heightShape || fastShape->type == b3_voxelShape )
 		{
 			continue;
 		}

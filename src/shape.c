@@ -60,6 +60,7 @@ static float b3ComputeShapeMargin( b3Shape* shape )
 		case b3_meshShape:
 		case b3_heightShape:
 		case b3_compoundShape:
+		case b3_voxelShape:
 		{
 			// Static-only shapes: broadphase uses speculative distance for static
 			// proxies, so the per-shape margin is never consumed in practice.
@@ -160,6 +161,10 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
 
 		case b3_heightShape:
 			shape->heightField = (b3HeightFieldData*)geometry;
+			break;
+
+		case b3_voxelShape:
+			shape->voxelField = (b3VoxelFieldData*)geometry;
 			break;
 
 		default:
@@ -275,9 +280,10 @@ static b3ShapeId b3CreateShape( b3BodyId bodyId, const b3ShapeDef* def, const vo
 	}
 
 	b3Body* body = b3GetBodyFullId( world, bodyId );
-	if ( body->type != b3_staticBody && ( shapeType == b3_compoundShape || shapeType == b3_heightShape ) )
+	if ( body->type != b3_staticBody &&
+		 ( shapeType == b3_compoundShape || shapeType == b3_heightShape || shapeType == b3_voxelShape ) )
 	{
-		// Compound and height shapes must be on static bodies.
+		// Compound, height, and voxel shapes must be on static bodies.
 		return b3_nullShapeId;
 	}
 
@@ -455,6 +461,30 @@ b3ShapeId b3CreateHeightFieldShape( b3BodyId bodyId, const b3ShapeDef* def, cons
 	return shapeId;
 }
 
+b3ShapeId b3CreateVoxelFieldShape( b3BodyId bodyId, const b3ShapeDef* def, const b3VoxelFieldData* field )
+{
+	B3_ASSERT( field->version == B3_VOXEL_FIELD_VERSION );
+	B3_ASSERT( field->hash != 0 );
+
+	if ( field->version != B3_VOXEL_FIELD_VERSION )
+	{
+		return b3_nullShapeId;
+	}
+
+	b3ShapeId shapeId = b3CreateShape( bodyId, def, field, b3_voxelShape, b3Transform_identity, b3Vec3_one, false );
+	if ( shapeId.index1 != 0 )
+	{
+		b3World* world = b3GetUnlockedWorld( bodyId.world0 );
+		if ( world != NULL && world->recording != NULL )
+		{
+			uint32_t geometryId = b3RecInternVoxelField( world->recording, field );
+			b3RecArgs_CreateVoxelFieldShape createArgs = { bodyId, *def, geometryId };
+			b3RecWriteRet_CreateVoxelFieldShape( world->recording, &createArgs, shapeId );
+		}
+	}
+	return shapeId;
+}
+
 b3ShapeId b3CreateBakedCompoundShape( b3BodyId bodyId, b3ShapeDef* def, const b3CompoundData* compound )
 {
 	B3_ASSERT( compound->version == B3_COMPOUND_VERSION );
@@ -618,6 +648,9 @@ b3AABB b3ComputeShapeAABB( const b3Shape* shape, b3Transform transform )
 		case b3_heightShape:
 			return b3ComputeHeightFieldAABB( shape->heightField, transform );
 
+		case b3_voxelShape:
+			return b3ComputeVoxelFieldAABB( shape->voxelField, transform );
+
 		case b3_hullShape:
 			return b3ComputeHullAABB( shape->hull, transform );
 
@@ -702,6 +735,11 @@ b3Vec3 b3GetShapeCentroid( const b3Shape* shape )
 		case b3_heightShape:
 		{
 			b3AABB aabb = b3ComputeHeightFieldAABB( shape->heightField, b3Transform_identity );
+			return b3AABB_Center( aabb );
+		}
+		case b3_voxelShape:
+		{
+			b3AABB aabb = b3ComputeVoxelFieldAABB( shape->voxelField, b3Transform_identity );
 			return b3AABB_Center( aabb );
 		}
 		default:
@@ -862,6 +900,9 @@ b3CastOutput b3RayCastShape( const b3Shape* shape, b3Transform transform, const 
 		case b3_heightShape:
 			output = b3RayCastHeightField( shape->heightField, &localInput );
 			break;
+		case b3_voxelShape:
+			output = b3RayCastVoxelField( shape->voxelField, &localInput );
+			break;
 		default:
 			return output;
 	}
@@ -900,6 +941,10 @@ b3CastOutput b3ShapeCastShape( const b3Shape* shape, b3Transform transform, cons
 			output = b3ShapeCastHeightField( shape->heightField, &localInput );
 			break;
 
+		case b3_voxelShape:
+			output = b3ShapeCastVoxelField( shape->voxelField, &localInput );
+			break;
+
 		case b3_hullShape:
 			output = b3ShapeCastHull( shape->hull, &localInput );
 			break;
@@ -933,6 +978,9 @@ bool b3OverlapShape( const b3Shape* shape, b3Transform transform, const b3ShapeP
 
 		case b3_heightShape:
 			return b3OverlapHeightField( shape->heightField, transform, proxy );
+
+		case b3_voxelShape:
+			return b3OverlapVoxelField( shape->voxelField, transform, proxy );
 
 		case b3_hullShape:
 			return b3OverlapHull( shape->hull, transform, proxy );
@@ -987,6 +1035,10 @@ int b3CollideMover( b3PlaneResult* planes, int planeCapacity, const b3Shape* sha
 
 		case b3_heightShape:
 			planeCount = b3CollideMoverAndHeightField( planes, planeCapacity, shape->heightField, &localMover );
+			break;
+
+		case b3_voxelShape:
+			planeCount = b3CollideMoverAndVoxelField( planes, planeCapacity, shape->voxelField, &localMover );
 			break;
 
 		default:
@@ -1549,6 +1601,14 @@ const b3HeightFieldData* b3Shape_GetHeightField( b3ShapeId shapeId )
 	b3Shape* shape = b3GetShape( world, shapeId );
 	B3_ASSERT( shape->type == b3_heightShape );
 	return shape->heightField;
+}
+
+const b3VoxelFieldData* b3Shape_GetVoxelField( b3ShapeId shapeId )
+{
+	b3World* world = b3GetWorld( shapeId.world0 );
+	b3Shape* shape = b3GetShape( world, shapeId );
+	B3_ASSERT( shape->type == b3_voxelShape );
+	return shape->voxelField;
 }
 
 void b3Shape_SetSphere( b3ShapeId shapeId, const b3Sphere* sphere )
@@ -2287,7 +2347,7 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 		return context.toiOutput;
 	}
 
-	if ( typeA == b3_heightShape || typeA == b3_meshShape )
+	if ( typeA == b3_heightShape || typeA == b3_meshShape || typeA == b3_voxelShape )
 	{
 		// todo implement b3MeshTimeOfImpact and b3HeightFieldTimeOfImpact
 		// Note: assuming mesh is static
@@ -2342,6 +2402,11 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 		{
 			b3QueryHeightField( shapeA->heightField, localBounds, b3MeshTimeOfImpactFcn, &context );
 		}
+		else
+		{
+			B3_ASSERT( typeA == b3_voxelShape );
+			b3QueryVoxelField( shapeA->voxelField, localBounds, b3MeshTimeOfImpactFcn, &context );
+		}
 
 		float ms = b3GetMilliseconds( ticks );
 		if ( ms > 1000.0f * b3GetStallThreshold() )
@@ -2352,7 +2417,8 @@ b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* swee
 		return context.toiOutput;
 	}
 
-	B3_ASSERT( shapeB->type != b3_compoundShape && shapeB->type != b3_meshShape && shapeB->type != b3_heightShape );
+	B3_ASSERT( shapeB->type != b3_compoundShape && shapeB->type != b3_meshShape && shapeB->type != b3_heightShape &&
+			   shapeB->type != b3_voxelShape );
 
 	b3TOIInput input;
 	input.proxyA = b3MakeShapeProxy( shapeA );
@@ -2407,6 +2473,10 @@ uint64_t b3GetShapeUserMaterialId( const b3Shape* shape, int childIndex, int tri
 	else if ( shape->type == b3_heightShape )
 	{
 		materialIndex = b3GetHeightFieldMaterial( shape->heightField, triangleIndex );
+	}
+	else if ( shape->type == b3_voxelShape )
+	{
+		materialIndex = b3GetVoxelFieldMaterial( shape->voxelField, triangleIndex );
 	}
 	else if ( shape->type == b3_compoundShape )
 	{

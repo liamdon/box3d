@@ -850,7 +850,7 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
 		B3_VALIDATE( output.state != b3_toiStateUnknown );
 
 		// Mimic behavior in b3ContinuousQueryCallback. Ignore shapes that initially overlap.
-		if (0.0f < output.fraction && output.fraction < result.fraction)
+		if ( 0.0f < output.fraction && output.fraction < result.fraction )
 		{
 			input.maxFraction = output.fraction;
 
@@ -1566,9 +1566,9 @@ void b3Body_SetType( b3BodyId bodyId, b3BodyType type )
 		while ( shapeId != B3_NULL_INDEX )
 		{
 			b3Shape* shape = b3Array_Get( world->shapes, shapeId );
-			if ( shape->type == b3_compoundShape || shape->type == b3_heightShape )
+			if ( shape->type == b3_compoundShape || shape->type == b3_heightShape || shape->type == b3_voxelShape )
 			{
-				// Setting the body type is not supported for bodies with compound shapes
+				// Setting the body type is not supported for bodies with static-only shapes
 				return;
 			}
 
