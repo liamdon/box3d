@@ -21,8 +21,9 @@
 
 #pragma once
 
-#include "box3d/collision.h"
 #include "gfx/geometry_registry.h"
+
+#include "box3d/collision.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -44,6 +45,10 @@ MeshHandle FindOrAddMesh( const b3MeshData* meshData );
 // different scales hash to different entries, per-instance scale stays
 // at (1, 1, 1) for heightfield draws.
 MeshHandle FindOrAddHeightField( const b3HeightFieldData* heightField );
+
+// Acquire for b3VoxelFieldData. Only exposed faces of interior voxels are
+// built. The `scale` vector is part of the field's hash, as for height fields.
+MeshHandle FindOrAddVoxelField( const b3VoxelFieldData* field );
 
 #ifdef __cplusplus
 } // extern "C"

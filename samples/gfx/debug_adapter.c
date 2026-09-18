@@ -35,6 +35,7 @@ typedef enum
 	Box3DUS_Mesh,
 	Box3DUS_HeightField,
 	Box3DUS_Compound,
+	Box3DUS_VoxelField,
 } DebugShapeKind;
 
 typedef struct
@@ -175,7 +176,8 @@ void ResetAdapterPool( void )
 	for ( int i = 0; i < BOX3D_USER_SHAPE_CAPACITY; ++i )
 	{
 		DebugShape* us = &s_adapter.pool[i];
-		if ( us->kind == Box3DUS_Hull || us->kind == Box3DUS_Mesh || us->kind == Box3DUS_HeightField )
+		if ( us->kind == Box3DUS_Hull || us->kind == Box3DUS_Mesh || us->kind == Box3DUS_HeightField ||
+			 us->kind == Box3DUS_VoxelField )
 		{
 			ReleaseMeshReference( us->geom.handle );
 		}
@@ -638,6 +640,28 @@ static void* AdapterCreateDebugShape( const b3DebugShape* debugShape, void* cont
 		return us;
 	}
 
+	if ( debugShape->type == b3_voxelShape )
+	{
+		const b3VoxelFieldData* field = debugShape->voxelField;
+		const MeshHandle handle = FindOrAddVoxelField( field );
+		if ( !IsMeshHandleValid( handle ) )
+		{
+			return NULL;
+		}
+		const int index = AllocDebugShape();
+		if ( index < 0 )
+		{
+			ReleaseMeshReference( handle );
+			return NULL;
+		}
+		DebugShape* us = &s_adapter.pool[index];
+		us->kind = Box3DUS_VoxelField;
+		PopulateCommonFields( us, debugShape );
+		us->geom.handle = handle;
+		us->geom.scale = b3Vec3_one;
+		return us;
+	}
+
 	if ( debugShape->type == b3_compoundShape )
 	{
 		const int index = AllocDebugShape();
@@ -714,7 +738,8 @@ static void DestroyDebugShape( void* userShape, void* context )
 		{
 			DebugShape* child = &s_adapter.pool[ci];
 			const int next = child->nextChild;
-			if ( child->kind == Box3DUS_Hull || child->kind == Box3DUS_Mesh || child->kind == Box3DUS_HeightField )
+			if ( child->kind == Box3DUS_Hull || child->kind == Box3DUS_Mesh || child->kind == Box3DUS_HeightField ||
+				 child->kind == Box3DUS_VoxelField )
 			{
 				ReleaseMeshReference( child->geom.handle );
 			}
@@ -724,7 +749,8 @@ static void DestroyDebugShape( void* userShape, void* context )
 		free( us->compound.childMap );
 		us->compound.childMap = NULL;
 	}
-	else if ( us->kind == Box3DUS_Hull || us->kind == Box3DUS_Mesh || us->kind == Box3DUS_HeightField )
+	else if ( us->kind == Box3DUS_Hull || us->kind == Box3DUS_Mesh || us->kind == Box3DUS_HeightField ||
+			  us->kind == Box3DUS_VoxelField )
 	{
 		ReleaseMeshReference( us->geom.handle );
 	}
@@ -764,7 +790,8 @@ static void AppendResolvedShape( const DebugShape* us, b3Transform baseTransform
 			AppendHighlightCapsule( transform, us->capsule.halfLength, us->capsule.radius, hk );
 		}
 	}
-	else if ( us->kind == Box3DUS_Hull || us->kind == Box3DUS_Mesh || us->kind == Box3DUS_HeightField )
+	else if ( us->kind == Box3DUS_Hull || us->kind == Box3DUS_Mesh || us->kind == Box3DUS_HeightField ||
+			  us->kind == Box3DUS_VoxelField )
 	{
 		MeshMaterialMode mode = us->isGround ? MESH_MATERIAL_MODE_GROUND_GRID : MESH_MATERIAL_MODE_SOLID;
 		float cell = us->isGround ? BOX3D_GROUND_GRID_CELL_SIZE : 0.0f;
@@ -970,9 +997,9 @@ static void DrawCapsuleFcn( b3Pos p1, b3Pos p2, float radius, b3HexColor color, 
 {
 	(void)context;
 
-	b3Vec3 e = b3SubPos(p2, p1);
+	b3Vec3 e = b3SubPos( p2, p1 );
 	float length = b3Length( e );
-	if (length < FLT_EPSILON)
+	if ( length < FLT_EPSILON )
 	{
 		DrawSphereEx( (b3WorldTransform){ p1, b3Quat_identity }, radius, HexColorAToVec4( color, alpha ), DEFAULT_METALLIC,
 					  DEFAULT_ROUGHNESS, TRANSPARENT_SHADOW_NONE );
@@ -981,11 +1008,11 @@ static void DrawCapsuleFcn( b3Pos p1, b3Pos p2, float radius, b3HexColor color, 
 
 	b3Vec3 en = b3MulSV( 1.0f / length, e );
 	b3WorldTransform transform;
-	transform.p = b3OffsetPos( p1, b3MulSV( 0.5f, e ));
+	transform.p = b3OffsetPos( p1, b3MulSV( 0.5f, e ) );
 	transform.q = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisX, en );
 
-	DrawCapsuleEx( transform, 0.5f * length, radius, HexColorAToVec4( color, alpha ), DEFAULT_METALLIC,
-				  DEFAULT_ROUGHNESS, TRANSPARENT_SHADOW_NONE );
+	DrawCapsuleEx( transform, 0.5f * length, radius, HexColorAToVec4( color, alpha ), DEFAULT_METALLIC, DEFAULT_ROUGHNESS,
+				   TRANSPARENT_SHADOW_NONE );
 }
 
 static void DrawBoundsFcn( b3AABB aabb, b3HexColor color, void* context )

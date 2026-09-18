@@ -4,9 +4,10 @@
 #include "gfx/edges.h"
 
 #include "edge.glsl.h"
-#include "box3d/types.h"
 #include "gfx/geometry_registry.h"
 #include "gfx/scene_target.h"
+
+#include "box3d/types.h"
 
 // Two pipelines off the same shader:
 
@@ -123,6 +124,8 @@ static bool IsBatchEnabled( const MeshEdgeBatch* b, const EdgeOverlayParams* p )
 		case MESH_KIND_MESH:
 			return p->showMeshes;
 		case MESH_KIND_HEIGHTFIELD:
+		case MESH_KIND_VOXELFIELD:
+			// Voxel fields share the height field toggle, both are static terrain.
 			return p->showHeightfields;
 		case MESH_KIND_UNKNOWN:
 		default:

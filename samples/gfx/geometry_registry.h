@@ -104,6 +104,7 @@ typedef enum MeshKind
 	MESH_KIND_HULL,
 	MESH_KIND_MESH,
 	MESH_KIND_HEIGHTFIELD,
+	MESH_KIND_VOXELFIELD,
 } MeshKind;
 
 // Per-entry edge-draw batch produced by UploadMeshInstances. One batch
@@ -144,8 +145,8 @@ void DestroyMeshRegistry( void );
 
 MeshHandle FindMesh( uint64_t hash );
 
-MeshHandle RegisterMesh( uint64_t hash, const MeshVertex* vertices, int vertexCount, const uint32_t* indices,
-								int indexCount, const char* debugLabel );
+MeshHandle RegisterMesh( uint64_t hash, const MeshVertex* vertices, int vertexCount, const uint32_t* indices, int indexCount,
+						 const char* debugLabel );
 
 // Optional: register an edge list for a geometry already registered via
 // RegisterMesh. Must be called at most once per registration (i.e. between
@@ -195,7 +196,7 @@ typedef enum MeshMaterialMode
 } MeshMaterialMode;
 
 void AppendMesh( MeshHandle h, b3Transform transform, b3Vec3 scale, Vec4 baseColor, float metallic, float roughness,
-					MeshMaterialMode materialMode, float gridCellSize, TransparentShadowCast shadowCast );
+				 MeshMaterialMode materialMode, float gridCellSize, TransparentShadowCast shadowCast );
 
 // Pack per-entry instances into the global GPU buffer. Called once per
 // frame by the renderer before draw. Returns the total instance count

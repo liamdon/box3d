@@ -420,6 +420,55 @@ static inline int MeshEdgeLess( const EdgeRecord* a, const EdgeRecord* b )
 	return a->v1 < b->v1;
 }
 
+// Sort + unique on the canonicalized (v0, v1) key. svpv/qsort macro
+// inlines the comparator and swap so this is fast even for very dense
+// meshes, runs once at acquire, not per frame.
+static void DedupEdges( EdgeBuilder* eb )
+{
+	if ( eb->count <= 1 )
+	{
+		return;
+	}
+
+#define LESS( i, j ) MeshEdgeLess( &eb->edges[(int)( i )], &eb->edges[(int)( j )] )
+#define SWAP( i, j )                                                                                                             \
+	do                                                                                                                           \
+	{                                                                                                                            \
+		EdgeRecord tmp_ = eb->edges[(int)( i )];                                                                                 \
+		eb->edges[(int)( i )] = eb->edges[(int)( j )];                                                                           \
+		eb->edges[(int)( j )] = tmp_;                                                                                            \
+	}                                                                                                                            \
+	while ( 0 )
+
+	QSORT( eb->count, LESS, SWAP );
+#undef LESS
+#undef SWAP
+
+	// In-place unique. Two records compare equal when (v0, v1) match.
+	// On a flag tie the higher-rank class wins so the overlay renders the
+	// edge in the more prominent color when the two triangles' bits
+	// disagree (rare but possible at non-manifold joints).
+	int write = 0;
+	for ( int read = 1; read < eb->count; ++read )
+	{
+		EdgeRecord* w = &eb->edges[write];
+		EdgeRecord* r = &eb->edges[read];
+		if ( w->v0 == r->v0 && w->v1 == r->v1 )
+		{
+			if ( EdgeClassRank( r->flags ) > EdgeClassRank( w->flags ) )
+			{
+				w->flags = r->flags;
+			}
+		}
+		else
+		{
+			++write;
+			eb->edges[write] = *r;
+		}
+	}
+	eb->count = write + 1;
+}
+
 static MeshHandle BuildMeshData( const b3MeshData* meshData )
 {
 	const b3Vec3* verts = b3GetMeshVertices( meshData );
@@ -479,49 +528,7 @@ static MeshHandle BuildMeshData( const b3MeshData* meshData )
 		return InvalidMeshHandle();
 	}
 
-	// Sort + unique on the canonicalized (v0, v1) key. svpv/qsort macro
-	// inlines the comparator and swap so this is fast even for very dense
-	// meshes, runs once at acquire, not per frame.
-	if ( eb.count > 1 )
-	{
-#define LESS( i, j ) MeshEdgeLess( &eb.edges[(int)( i )], &eb.edges[(int)( j )] )
-#define SWAP( i, j )                                                                                                             \
-	do                                                                                                                           \
-	{                                                                                                                            \
-		EdgeRecord tmp_ = eb.edges[(int)( i )];                                                                                  \
-		eb.edges[(int)( i )] = eb.edges[(int)( j )];                                                                             \
-		eb.edges[(int)( j )] = tmp_;                                                                                             \
-	}                                                                                                                            \
-	while ( 0 )
-
-		QSORT( eb.count, LESS, SWAP );
-#undef LESS
-#undef SWAP
-
-		// In-place unique. Two records compare equal when (v0, v1) match.
-		// On a flag tie the higher-rank class wins so the overlay renders the
-		// edge in the more prominent color when the two triangles' bits
-		// disagree (rare but possible at non-manifold joints).
-		int write = 0;
-		for ( int read = 1; read < eb.count; ++read )
-		{
-			EdgeRecord* w = &eb.edges[write];
-			EdgeRecord* r = &eb.edges[read];
-			if ( w->v0 == r->v0 && w->v1 == r->v1 )
-			{
-				if ( EdgeClassRank( r->flags ) > EdgeClassRank( w->flags ) )
-				{
-					w->flags = r->flags;
-				}
-			}
-			else
-			{
-				++write;
-				eb.edges[write] = *r;
-			}
-		}
-		eb.count = write + 1;
-	}
+	DedupEdges( &eb );
 
 	const MeshHandle h = RegisterMesh( meshData->hash, buf.vertices, buf.vertexCount, buf.indices, buf.indexCount, "geom_mesh" );
 
@@ -570,7 +577,7 @@ static MeshHandle BuildHeightField( const b3HeightFieldData* hf )
 	const int cols = hf->columnCount;
 	const int rows = hf->rowCount;
 	const uint8_t* materials = b3GetHeightFieldMaterialIndices( hf ); // may be NULL if all solid
-	const uint8_t* edgeFlags = b3GetHeightFieldFlags( hf );			 // per-triangle concave bits
+	const uint8_t* edgeFlags = b3GetHeightFieldFlags( hf );			  // per-triangle concave bits
 	const bool clockwise = hf->clockwise;
 
 	// Build a (rows x cols) grid vertex array up front. Triangle emission
@@ -790,6 +797,180 @@ static MeshHandle BuildHeightField( const b3HeightFieldData* hf )
 	return h;
 }
 
+// Face corner offsets, outward normals, and the voxel across each face edge.
+// These match the tables in src/voxel_field.c: faces are ordered -x, +x, -y,
+// +y, -z, +z and corners are counter-clockwise viewed from outside.
+static const int s_voxelFaceCorners[6][4][3] = {
+	{ { 0, 0, 0 }, { 0, 0, 1 }, { 0, 1, 1 }, { 0, 1, 0 } }, // -x
+	{ { 1, 0, 0 }, { 1, 1, 0 }, { 1, 1, 1 }, { 1, 0, 1 } }, // +x
+	{ { 0, 0, 0 }, { 1, 0, 0 }, { 1, 0, 1 }, { 0, 0, 1 } }, // -y
+	{ { 0, 1, 0 }, { 0, 1, 1 }, { 1, 1, 1 }, { 1, 1, 0 } }, // +y
+	{ { 0, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 }, { 1, 0, 0 } }, // -z
+	{ { 0, 0, 1 }, { 1, 0, 1 }, { 1, 1, 1 }, { 0, 1, 1 } }, // +z
+};
+
+static const int s_voxelFaceNormals[6][3] = {
+	{ -1, 0, 0 }, { 1, 0, 0 }, { 0, -1, 0 }, { 0, 1, 0 }, { 0, 0, -1 }, { 0, 0, 1 },
+};
+
+static const int s_voxelFaceEdgeNeighbors[6][4][3] = {
+	{ { 0, -1, 0 }, { 0, 0, 1 }, { 0, 1, 0 }, { 0, 0, -1 } }, // -x
+	{ { 0, 0, -1 }, { 0, 1, 0 }, { 0, 0, 1 }, { 0, -1, 0 } }, // +x
+	{ { 0, 0, -1 }, { 1, 0, 0 }, { 0, 0, 1 }, { -1, 0, 0 } }, // -y
+	{ { -1, 0, 0 }, { 0, 0, 1 }, { 1, 0, 0 }, { 0, 0, -1 } }, // +y
+	{ { -1, 0, 0 }, { 0, 1, 0 }, { 1, 0, 0 }, { 0, -1, 0 } }, // -z
+	{ { 0, -1, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { -1, 0, 0 } }, // +z
+};
+
+// Flat-shaded exposed faces of the interior voxels plus their convex and
+// concave edges. Coplanar edges between neighboring faces are skipped so a
+// flat voxel floor draws as a clean plane.
+static MeshHandle BuildVoxelField( const b3VoxelFieldData* field )
+{
+	const int countX = field->countX;
+	const int countY = field->countY;
+	const int countZ = field->countZ;
+	const int border = field->hasBorder ? 1 : 0;
+	if ( countX <= 2 * border || countY <= 2 * border || countZ <= 2 * border )
+	{
+		fprintf( stderr, "error: voxel field degenerate (hash=0x%016" PRIx64 ")\n", field->hash );
+		return InvalidMeshHandle();
+	}
+
+	// Grid corner array. Triangles carry duplicated corners for flat shading,
+	// the edge builder refers to grid corner indices, so it needs a contiguous
+	// corner array to expand against at upload time.
+	const int cornersX = countX + 1;
+	const int cornersY = countY + 1;
+	const int cornersZ = countZ + 1;
+	const size_t cornerCount = (size_t)cornersX * (size_t)cornersY * (size_t)cornersZ;
+	b3Vec3* corners = (b3Vec3*)malloc( cornerCount * sizeof( b3Vec3 ) );
+	if ( !corners )
+	{
+		fprintf( stderr, "error: voxel corner alloc failed (count=%zu)\n", cornerCount );
+		return InvalidMeshHandle();
+	}
+	for ( int z = 0; z < cornersZ; ++z )
+	{
+		for ( int y = 0; y < cornersY; ++y )
+		{
+			for ( int x = 0; x < cornersX; ++x )
+			{
+				b3Vec3* c = &corners[x + cornersX * ( y + cornersY * z )];
+				c->x = field->scale.x * (float)x;
+				c->y = field->scale.y * (float)y;
+				c->z = field->scale.z * (float)z;
+			}
+		}
+	}
+
+	BuildBuffer buf = { 0 };
+	EdgeBuilder eb = { 0 };
+
+	for ( int z = border; z < countZ - border; ++z )
+	{
+		for ( int y = border; y < countY - border; ++y )
+		{
+			for ( int x = border; x < countX - border; ++x )
+			{
+				if ( b3IsVoxelSolid( field, x, y, z ) == false )
+				{
+					continue;
+				}
+
+				for ( int face = 0; face < 6; ++face )
+				{
+					const int* n = s_voxelFaceNormals[face];
+					if ( b3IsVoxelSolid( field, x + n[0], y + n[1], z + n[2] ) )
+					{
+						// Hidden face
+						continue;
+					}
+
+					uint32_t index[4];
+					b3Vec3 p[4];
+					for ( int i = 0; i < 4; ++i )
+					{
+						const int* o = s_voxelFaceCorners[face][i];
+						index[i] = (uint32_t)( ( x + o[0] ) + cornersX * ( ( y + o[1] ) + cornersY * ( z + o[2] ) ) );
+						p[i] = corners[index[i]];
+					}
+
+					const b3Vec3 normal = { (float)n[0], (float)n[1], (float)n[2] };
+					if ( !EmitFlatTriangle( &buf, p[0], p[1], p[2], normal ) ||
+						 !EmitFlatTriangle( &buf, p[0], p[2], p[3], normal ) )
+					{
+						EdgeBuilderFree( &eb );
+						BufferFree( &buf );
+						free( corners );
+						return InvalidMeshHandle();
+					}
+
+					for ( int edge = 0; edge < 4; ++edge )
+					{
+						const int* d = s_voxelFaceEdgeNeighbors[face][edge];
+						uint32_t edgeClass;
+						if ( b3IsVoxelSolid( field, x + d[0], y + d[1], z + d[2] ) == false )
+						{
+							edgeClass = (uint32_t)EDGE_CONVEX;
+						}
+						else if ( b3IsVoxelSolid( field, x + d[0] + n[0], y + d[1] + n[1], z + d[2] + n[2] ) )
+						{
+							edgeClass = (uint32_t)EDGE_CONCAVE;
+						}
+						else
+						{
+							// Coplanar continuation
+							continue;
+						}
+
+						if ( !EmitEdge( &eb, index[edge], index[( edge + 1 ) & 3], edgeClass ) )
+						{
+							EdgeBuilderFree( &eb );
+							BufferFree( &buf );
+							free( corners );
+							return InvalidMeshHandle();
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if ( buf.indexCount == 0 )
+	{
+		EdgeBuilderFree( &eb );
+		BufferFree( &buf );
+		free( corners );
+		return InvalidMeshHandle();
+	}
+
+	// Every outer edge is emitted by both faces that share it
+	DedupEdges( &eb );
+
+	const MeshHandle h =
+		RegisterMesh( field->hash, buf.vertices, buf.vertexCount, buf.indices, buf.indexCount, "geom_voxelfield" );
+
+	if ( IsMeshHandleValid( h ) )
+	{
+		SetMeshKind( h, MESH_KIND_VOXELFIELD );
+		if ( eb.count > 0 )
+		{
+			EdgeVertex* upload = ExpandEdgesForUpload( eb.edges, eb.count, corners );
+			if ( upload )
+			{
+				RegisterMeshEdges( h, upload, eb.count, "geom_voxelfield_edges" );
+				free( upload );
+			}
+		}
+	}
+
+	EdgeBuilderFree( &eb );
+	BufferFree( &buf );
+	free( corners );
+	return h;
+}
+
 MeshHandle FindOrAddHull( const b3HullData* hull )
 {
 	if ( !hull || hull->hash == 0 )
@@ -837,4 +1018,19 @@ MeshHandle FindOrAddHeightField( const b3HeightFieldData* heightField )
 		return existing;
 	}
 	return BuildHeightField( heightField );
+}
+
+MeshHandle FindOrAddVoxelField( const b3VoxelFieldData* field )
+{
+	if ( !field || field->hash == 0 )
+	{
+		return InvalidMeshHandle();
+	}
+	MeshHandle existing = FindMesh( field->hash );
+	if ( IsMeshHandleValid( existing ) )
+	{
+		AddMeshReference( existing );
+		return existing;
+	}
+	return BuildVoxelField( field );
 }
