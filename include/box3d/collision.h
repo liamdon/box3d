@@ -575,6 +575,9 @@ B3_API bool b3OverlapMesh( const b3Mesh* shape, b3Transform shapeTransform, cons
 /// Overlap shape versus sphere
 B3_API bool b3OverlapSphere( const b3Sphere* shape, b3Transform shapeTransform, const b3ShapeProxy* proxy );
 
+/// Overlap shape versus voxel field
+B3_API bool b3OverlapVoxelField( const b3VoxelFieldData* shape, b3Transform shapeTransform, const b3ShapeProxy* proxy );
+
 /// Ray cast versus sphere in local space. A zero length ray is a point query. Initial overlap
 /// reports a hit at the ray origin with zero fraction and zero normal.
 B3_API b3CastOutput b3RayCastSphere( const b3Sphere* shape, const b3RayCastInput* input );

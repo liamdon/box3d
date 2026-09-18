@@ -730,6 +730,69 @@ static int VoxelShapeCastBruteForce( void )
 	return 0;
 }
 
+static int VoxelOverlapAtSurface( void )
+{
+	b3VoxelFieldData* field = MakeFloorField( 8, 4, 8, 2, false );
+	b3Transform transform = { { 100.0f, 0.0f, 0.0f }, b3Quat_identity };
+
+	// Sphere overlapping the top at y = 2, world x offset by the transform
+	b3Vec3 touching = { 103.5f, 2.4f, 5.5f };
+	b3ShapeProxy proxy = { &touching, 1, 0.5f };
+	ENSURE( b3OverlapVoxelField( field, transform, &proxy ) == true );
+
+	b3Vec3 above = { 103.5f, 2.6f, 5.5f };
+	proxy.points = &above;
+	ENSURE( b3OverlapVoxelField( field, transform, &proxy ) == false );
+
+	// Beside the field
+	b3Vec3 beside = { 90.0f, 1.0f, 5.5f };
+	proxy.points = &beside;
+	ENSURE( b3OverlapVoxelField( field, transform, &proxy ) == false );
+
+	// Inside the floor
+	b3Vec3 inside = { 103.5f, 1.0f, 5.5f };
+	proxy.points = &inside;
+	ENSURE( b3OverlapVoxelField( field, transform, &proxy ) == true );
+
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
+static int VoxelMoverPlanes( void )
+{
+	b3VoxelFieldData* field = MakeFloorField( 8, 4, 8, 2, false );
+
+	// Capsule standing on the floor, centered over the corner shared by four voxels, sunk 5 cm
+	b3Capsule mover = { { 4.0f, 2.45f, 4.0f }, { 4.0f, 3.45f, 4.0f }, 0.5f };
+	b3PlaneResult planes[64];
+	int count = b3CollideMoverAndVoxelField( planes, 64, field, &mover );
+
+	ENSURE( count == 4 );
+	for ( int i = 0; i < count; ++i )
+	{
+		// Every plane is the floor plane; no vertical planes from hidden faces
+		ENSURE_SMALL( planes[i].plane.normal.y - 1.0f, 1e-4f );
+		ENSURE_SMALL( planes[i].plane.offset - 0.05f, 1e-3f );
+		int face = ( planes[i].triangleIndex - 12 * ( planes[i].triangleIndex / 12 ) ) >> 1;
+		ENSURE( face == 3 );
+		ENSURE( planes[i].childIndex == 0 );
+		ENSURE( planes[i].materialIndex == 0 );
+	}
+
+	// Floating above: no planes
+	mover = (b3Capsule){ { 4.0f, 3.0f, 4.0f }, { 4.0f, 4.0f, 4.0f }, 0.5f };
+	count = b3CollideMoverAndVoxelField( planes, 64, field, &mover );
+	ENSURE( count == 0 );
+
+	// Capacity limits the result
+	mover = (b3Capsule){ { 4.0f, 2.45f, 4.0f }, { 4.0f, 3.45f, 4.0f }, 0.5f };
+	count = b3CollideMoverAndVoxelField( planes, 2, field, &mover );
+	ENSURE( count == 2 );
+
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
 int VoxelFieldTest( void )
 {
 	RUN_SUBTEST( VoxelFieldCreate );
@@ -746,6 +809,8 @@ int VoxelFieldTest( void )
 	RUN_SUBTEST( VoxelRayCastBruteForce );
 	RUN_SUBTEST( VoxelShapeCastFloor );
 	RUN_SUBTEST( VoxelShapeCastBruteForce );
+	RUN_SUBTEST( VoxelOverlapAtSurface );
+	RUN_SUBTEST( VoxelMoverPlanes );
 
 	return 0;
 }

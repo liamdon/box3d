@@ -810,3 +810,136 @@ b3CastOutput b3ShapeCastVoxelField( const b3VoxelFieldData* shape, const b3Shape
 
 	return output;
 }
+
+bool b3OverlapVoxelField( const b3VoxelFieldData* shape, b3Transform shapeTransform, const b3ShapeProxy* proxy )
+{
+	b3Vec3 buffer[B3_MAX_SHAPE_CAST_POINTS];
+	b3ShapeProxy localProxy = b3MakeLocalProxy( proxy, shapeTransform, buffer );
+	b3AABB aabb = b3ComputeProxyAABB( &localProxy );
+	b3VoxelRange range = b3GetVoxelRange( shape, aabb );
+
+	b3DistanceInput input;
+	input.proxyB = localProxy;
+	input.transform = b3Transform_identity;
+	input.useRadii = true;
+
+	b3SimplexCache cache = { 0 };
+
+	for ( int z = range.z1; z <= range.z2; ++z )
+	{
+		for ( int y = range.y1; y <= range.y2; ++y )
+		{
+			for ( int x = range.x1; x <= range.x2; ++x )
+			{
+				if ( b3IsVoxelSolid( shape, x, y, z ) == false )
+				{
+					continue;
+				}
+
+				b3Vec3 corners[8];
+				for ( int i = 0; i < 8; ++i )
+				{
+					corners[i] = b3GetVoxelCorner( shape, x + ( i & 1 ), y + ( ( i >> 1 ) & 1 ), z + ( i >> 2 ) );
+				}
+
+				input.proxyA = (b3ShapeProxy){ corners, 8, 0.0f };
+
+				// reset the cache
+				cache.count = 0;
+
+				// get distance between voxel and query shape
+				b3DistanceOutput output = b3ShapeDistance( &input, &cache, NULL, 0 );
+
+				if ( output.distance < B3_OVERLAP_SLOP )
+				{
+					// overlap detected
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+int b3CollideMoverAndVoxelField( b3PlaneResult* planes, int capacity, const b3VoxelFieldData* field, const b3Capsule* mover )
+{
+	b3DistanceInput distanceInput = { 0 };
+	distanceInput.proxyB = (b3ShapeProxy){ &mover->center1, 2, 0.0f };
+	distanceInput.transform = b3Transform_identity;
+	distanceInput.useRadii = false;
+
+	b3SimplexCache cache = { 0 };
+
+	float radius = mover->radius;
+	b3Vec3 center = b3Lerp( mover->center1, mover->center2, 0.5f );
+	b3AABB bounds = b3MakeAABB( &mover->center1, 2, radius );
+	b3VoxelRange range = b3GetVoxelRange( field, bounds );
+
+	int planeCount = 0;
+
+	// Outer loop on z, then y, then x so that triangle indices increase monotonically.
+	for ( int z = range.z1; z <= range.z2; ++z )
+	{
+		for ( int y = range.y1; y <= range.y2; ++y )
+		{
+			for ( int x = range.x1; x <= range.x2; ++x )
+			{
+				if ( b3IsVoxelSolid( field, x, y, z ) == false )
+				{
+					continue;
+				}
+
+				int voxelIndex = b3GetVoxelIndex( field, x, y, z );
+
+				for ( int face = 0; face < B3_VOXEL_FACE_COUNT; ++face )
+				{
+					if ( b3IsVoxelFaceExposed( field, x, y, z, face ) == false )
+					{
+						continue;
+					}
+
+					b3Vec3 corners[4];
+					b3GetVoxelFaceCorners( field, x, y, z, face, corners );
+
+					// Front side?
+					const int* n = b3_faceNormals[face];
+					b3Vec3 normal = { (float)n[0], (float)n[1], (float)n[2] };
+					if ( b3Dot( b3Sub( center, corners[0] ), normal ) < 0.0f )
+					{
+						continue;
+					}
+
+					distanceInput.proxyA = (b3ShapeProxy){ corners, 4, 0.0f };
+
+					// reset the cache
+					cache.count = 0;
+
+					// get distance between face and mover
+					b3DistanceOutput distanceOutput = b3ShapeDistance( &distanceInput, &cache, NULL, 0 );
+
+					if ( distanceOutput.distance == 0.0f )
+					{
+						// deep overlap
+					}
+					else if ( distanceOutput.distance <= radius )
+					{
+						int triangleIndex = B3_TRIANGLES_PER_VOXEL * voxelIndex + 2 * face +
+											b3GetVoxelFaceSubTriangle( corners, distanceOutput.pointA );
+						int materialIndex = b3GetVoxelFieldMaterial( field, triangleIndex );
+						b3Plane plane = { distanceOutput.normal, radius - distanceOutput.distance };
+						planes[planeCount] = (b3PlaneResult){ plane, distanceOutput.pointA, triangleIndex, 0, materialIndex };
+						planeCount += 1;
+
+						if ( planeCount == capacity )
+						{
+							return planeCount;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return planeCount;
+}
