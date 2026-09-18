@@ -591,3 +591,222 @@ b3CastOutput b3RayCastVoxelField( const b3VoxelFieldData* shape, const b3RayCast
 		output.iterations += 1;
 	}
 }
+
+// Cast the proxy against one solid voxel and keep the hit if it is the nearest so far. The voxel corners are
+// relative to the voxel origin for precision.
+static void b3ShapeCastVoxel( b3CastOutput* output, const b3VoxelFieldData* field, const b3ShapeCastInput* input,
+							  b3Vec3 shapeStart, int x, int y, int z )
+{
+	b3Vec3 origin = b3GetVoxelCorner( field, x, y, z );
+	b3Vec3 extent = field->scale;
+
+	// Back face: the shape starts inside this voxel
+	if ( origin.x <= shapeStart.x && shapeStart.x < origin.x + extent.x && origin.y <= shapeStart.y &&
+		 shapeStart.y < origin.y + extent.y && origin.z <= shapeStart.z && shapeStart.z < origin.z + extent.z )
+	{
+		return;
+	}
+
+	b3Vec3 corners[8];
+	for ( int i = 0; i < 8; ++i )
+	{
+		corners[i] = (b3Vec3){ ( i & 1 ) ? extent.x : 0.0f, ( ( i >> 1 ) & 1 ) ? extent.y : 0.0f, ( i >> 2 ) ? extent.z : 0.0f };
+	}
+
+	b3ShapeCastPairInput pairInput = { 0 };
+	pairInput.proxyA = (b3ShapeProxy){ corners, 8, 0.0f };
+	pairInput.proxyB = input->proxy;
+	pairInput.transform.p = b3Neg( origin );
+	pairInput.transform.q = b3Quat_identity;
+	pairInput.translationB = input->translation;
+	pairInput.maxFraction = output->hit ? output->fraction : input->maxFraction;
+	pairInput.canEncroach = input->canEncroach;
+
+	b3CastOutput pairOutput = b3ShapeCast( &pairInput );
+	int iterations = output->iterations + pairOutput.iterations;
+
+	if ( pairOutput.hit == false || ( output->hit && pairOutput.fraction >= output->fraction ) )
+	{
+		output->iterations = iterations;
+		return;
+	}
+
+	// The face is the dominant axis of the normal
+	b3Vec3 normal = pairOutput.normal;
+	b3Vec3 absNormal = b3Abs( normal );
+	int face;
+	if ( absNormal.x >= absNormal.y && absNormal.x >= absNormal.z )
+	{
+		face = normal.x < 0.0f ? 0 : 1;
+	}
+	else if ( absNormal.y >= absNormal.z )
+	{
+		face = normal.y < 0.0f ? 2 : 3;
+	}
+	else
+	{
+		face = normal.z < 0.0f ? 4 : 5;
+	}
+
+	b3Vec3 point = b3Add( pairOutput.point, origin );
+
+	*output = pairOutput;
+	output->point = point;
+	output->iterations = iterations;
+	output->triangleIndex = b3GetVoxelTriangleIndex( field, x, y, z, face, point );
+	output->materialIndex = b3GetVoxelFieldMaterial( field, output->triangleIndex );
+}
+
+// Cast the proxy against every solid voxel in the range
+static void b3ShapeCastVoxelRange( b3CastOutput* output, const b3VoxelFieldData* field, const b3ShapeCastInput* input,
+								   b3Vec3 shapeStart, b3VoxelRange range )
+{
+	for ( int z = range.z1; z <= range.z2; ++z )
+	{
+		for ( int y = range.y1; y <= range.y2; ++y )
+		{
+			for ( int x = range.x1; x <= range.x2; ++x )
+			{
+				if ( b3IsVoxelSolid( field, x, y, z ) )
+				{
+					b3ShapeCastVoxel( output, field, input, shapeStart, x, y, z );
+				}
+			}
+		}
+	}
+}
+
+b3CastOutput b3ShapeCastVoxelField( const b3VoxelFieldData* shape, const b3ShapeCastInput* input )
+{
+	b3CastOutput output = { 0 };
+
+	b3AABB shapeBounds = b3MakeAABB( input->proxy.points, input->proxy.count, input->proxy.radius );
+	b3Vec3 shapeTranslation = input->translation;
+
+	// The shape start is the center of the proxy.
+	b3Vec3 shapeStart = b3AABB_Center( shapeBounds );
+
+	// The cast reports a hit when the shapes come within the linear slop, so the swept footprint is
+	// inflated to match.
+	b3Vec3 margin = { B3_LINEAR_SLOP, B3_LINEAR_SLOP, B3_LINEAR_SLOP };
+	b3Vec3 shapeExtents = b3Add( b3AABB_Extents( shapeBounds ), margin );
+
+	// Clip the center sweep against the interior bounds inflated by the shape extents. b3RayCastAABB
+	// returns fractions of the segment, so map them back to fractions of the input translation.
+	b3AABB combinedBounds = { b3Sub( shape->aabb.lowerBound, shapeExtents ), b3Add( shape->aabb.upperBound, shapeExtents ) };
+	b3Vec3 shapeEnd = b3MulAdd( shapeStart, input->maxFraction, shapeTranslation );
+
+	float t1, t2;
+	bool intersects = b3RayCastAABB( combinedBounds, shapeStart, shapeEnd, &t1, &t2 );
+	if ( intersects == false )
+	{
+		return output;
+	}
+
+	float minFraction = t1 * input->maxFraction;
+	float maxFraction = t2 * input->maxFraction;
+
+	// Every solid voxel under the initial footprint
+	b3Vec3 center = b3MulAdd( shapeStart, minFraction, shapeTranslation );
+	b3AABB footprint = { b3Sub( center, shapeExtents ), b3Add( center, shapeExtents ) };
+	b3ShapeCastVoxelRange( &output, shape, input, shapeStart, b3GetVoxelRange( shape, footprint ) );
+
+	// Walk the leading edge of the footprint on each axis. When the leading edge crosses into a new layer
+	// of voxels, the slab of voxels under the footprint in that layer is tested. The footprint only grows at
+	// a leading edge crossing, so every voxel is tested once.
+	float c[3] = { center.x, center.y, center.z };
+	float v[3] = { shapeTranslation.x, shapeTranslation.y, shapeTranslation.z };
+	float e[3] = { shapeExtents.x, shapeExtents.y, shapeExtents.z };
+	float scale[3] = { shape->scale.x, shape->scale.y, shape->scale.z };
+	int border = b3GetVoxelBorder( shape );
+	int counts[3] = { shape->countX, shape->countY, shape->countZ };
+
+	int cell[3];
+	int step[3];
+	float nextFraction[3];
+	float deltaFraction[3];
+	for ( int i = 0; i < 3; ++i )
+	{
+		if ( v[i] > 0.0f )
+		{
+			float lead = c[i] + e[i];
+			cell[i] = b3GetVoxelCoordinate( lead, scale[i], counts[i] );
+			step[i] = 1;
+			deltaFraction[i] = scale[i] / v[i];
+			nextFraction[i] = minFraction + ( scale[i] * (float)( cell[i] + 1 ) - lead ) / v[i];
+		}
+		else if ( v[i] < 0.0f )
+		{
+			float lead = c[i] - e[i];
+			cell[i] = b3GetVoxelCoordinate( lead, scale[i], counts[i] );
+			step[i] = -1;
+			deltaFraction[i] = -scale[i] / v[i];
+			nextFraction[i] = minFraction + ( scale[i] * (float)cell[i] - lead ) / v[i];
+		}
+		else
+		{
+			cell[i] = 0;
+			step[i] = 0;
+			deltaFraction[i] = FLT_MAX;
+			nextFraction[i] = FLT_MAX;
+		}
+	}
+
+	for ( ;; )
+	{
+		int axis = 0;
+		if ( nextFraction[1] < nextFraction[axis] )
+		{
+			axis = 1;
+		}
+
+		if ( nextFraction[2] < nextFraction[axis] )
+		{
+			axis = 2;
+		}
+
+		// A voxel cannot be hit before the footprint reaches it, so the best hit ends the walk
+		float fraction = nextFraction[axis];
+		if ( fraction > maxFraction || ( output.hit && fraction > output.fraction ) )
+		{
+			break;
+		}
+
+		cell[axis] += step[axis];
+		nextFraction[axis] += deltaFraction[axis];
+
+		if ( cell[axis] < border || cell[axis] > counts[axis] - 1 - border )
+		{
+			bool beyondFarSide = step[axis] > 0 ? cell[axis] > counts[axis] - 1 - border : cell[axis] < border;
+			if ( beyondFarSide )
+			{
+				// The leading edge has left the field on this axis. The trailing edge may still be inside,
+				// so the walk continues on the other axes.
+				nextFraction[axis] = FLT_MAX;
+			}
+
+			continue;
+		}
+
+		// The slab of voxels entering the footprint on this axis
+		b3Vec3 slabCenter = b3MulAdd( shapeStart, fraction, shapeTranslation );
+		b3AABB slab = { b3Sub( slabCenter, shapeExtents ), b3Add( slabCenter, shapeExtents ) };
+		float layer = scale[axis] * ( (float)cell[axis] + 0.5f );
+		if ( axis == 0 )
+		{
+			slab.lowerBound.x = slab.upperBound.x = layer;
+		}
+		else if ( axis == 1 )
+		{
+			slab.lowerBound.y = slab.upperBound.y = layer;
+		}
+		else
+		{
+			slab.lowerBound.z = slab.upperBound.z = layer;
+		}
+
+		b3ShapeCastVoxelRange( &output, shape, input, shapeStart, b3GetVoxelRange( shape, slab ) );
+	}
+
+	return output;
+}

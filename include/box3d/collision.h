@@ -623,6 +623,9 @@ B3_API b3CastOutput b3ShapeCastMesh( const b3Mesh* shape, const b3ShapeCastInput
 /// Shape cast versus a height field. Initial overlap is treated as a miss.
 B3_API b3CastOutput b3ShapeCastHeightField( const b3HeightFieldData* shape, const b3ShapeCastInput* input );
 
+/// Shape cast versus a voxel field. Only exposed faces are hit. Initial overlap is treated as a miss.
+B3_API b3CastOutput b3ShapeCastVoxelField( const b3VoxelFieldData* shape, const b3ShapeCastInput* input );
+
 /// Query callback.
 typedef bool b3MeshQueryFcn( b3Vec3 a, b3Vec3 b, b3Vec3 c, int triangleIndex, void* context );
 

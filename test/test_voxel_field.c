@@ -613,6 +613,123 @@ static int VoxelRayCastBruteForce( void )
 	return 0;
 }
 
+static int VoxelShapeCastFloor( void )
+{
+	b3VoxelFieldData* field = MakeFloorField( 8, 4, 8, 2, false );
+
+	// Sphere of radius 0.5 dropped onto the floor top at y = 2
+	b3Vec3 center = { 3.5f, 6.0f, 5.5f };
+	b3ShapeCastInput input = { { &center, 1, 0.5f }, { 0.0f, -10.0f, 0.0f }, 1.0f, false };
+	b3CastOutput output = b3ShapeCastVoxelField( field, &input );
+	ENSURE( output.hit );
+	ENSURE_SMALL( output.fraction - 0.35f, 1e-3f );
+	ENSURE_SMALL( output.normal.y - 1.0f, 1e-3f );
+	int face = ( output.triangleIndex - 12 * ( output.triangleIndex / 12 ) ) >> 1;
+	ENSURE( face == 3 );
+
+	// A box straddling four voxels still hits the top plane
+	b3Vec3 box[8] = { { 3.0f, 5.0f, 5.0f }, { 4.0f, 5.0f, 5.0f }, { 4.0f, 6.0f, 5.0f }, { 3.0f, 6.0f, 5.0f },
+					  { 3.0f, 5.0f, 6.0f }, { 4.0f, 5.0f, 6.0f }, { 4.0f, 6.0f, 6.0f }, { 3.0f, 6.0f, 6.0f } };
+	input = (b3ShapeCastInput){ { box, 8, 0.0f }, { 0.0f, -10.0f, 0.0f }, 1.0f, false };
+	output = b3ShapeCastVoxelField( field, &input );
+	ENSURE( output.hit );
+	ENSURE_SMALL( output.fraction - 0.3f, 1e-3f );
+	ENSURE_SMALL( output.normal.y - 1.0f, 1e-3f );
+
+	// Sideways from outside the field into the -x wall
+	center = (b3Vec3){ -3.0f, 1.0f, 2.5f };
+	input = (b3ShapeCastInput){ { &center, 1, 0.5f }, { 10.0f, 0.0f, 0.0f }, 1.0f, false };
+	output = b3ShapeCastVoxelField( field, &input );
+	ENSURE( output.hit );
+	ENSURE_SMALL( output.fraction - 0.25f, 1e-3f );
+	ENSURE_SMALL( output.normal.x + 1.0f, 1e-3f );
+
+	// Starting inside the floor: the voxel containing the center is skipped, nothing else is hit
+	center = (b3Vec3){ 3.5f, 1.5f, 5.5f };
+	input = (b3ShapeCastInput){ { &center, 1, 0.25f }, { 0.0f, 10.0f, 0.0f }, 1.0f, false };
+	output = b3ShapeCastVoxelField( field, &input );
+	ENSURE( output.hit == false );
+
+	// Miss: passing above the floor
+	center = (b3Vec3){ -3.0f, 3.0f, 2.5f };
+	input = (b3ShapeCastInput){ { &center, 1, 0.5f }, { 20.0f, 0.0f, 0.0f }, 1.0f, false };
+	output = b3ShapeCastVoxelField( field, &input );
+	ENSURE( output.hit == false );
+
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
+static int VoxelShapeCastBruteForce( void )
+{
+	b3VoxelFieldData* field = MakeRandomField( 8, 4242u, 0.25f );
+	uint32_t state = 99u;
+	int hitCount = 0;
+
+	for ( int trial = 0; trial < 200; ++trial )
+	{
+		b3Vec3 center = { RandomFloat( &state, -4.0f, 12.0f ), RandomFloat( &state, -2.0f, 6.0f ),
+						  RandomFloat( &state, -6.0f, 18.0f ) };
+		float radius = RandomFloat( &state, 0.1f, 0.6f );
+		if ( IsPointInSolid( field, center ) )
+		{
+			continue;
+		}
+
+		b3Vec3 translation = { RandomFloat( &state, -15.0f, 15.0f ), RandomFloat( &state, -8.0f, 8.0f ),
+							   RandomFloat( &state, -20.0f, 20.0f ) };
+		b3ShapeCastInput input = { { &center, 1, radius }, translation, 1.0f, false };
+		b3CastOutput output = b3ShapeCastVoxelField( field, &input );
+
+		// Brute force: cast against every solid voxel and keep the nearest hit
+		float best = FLT_MAX;
+		for ( int z = 0; z < 8; ++z )
+		{
+			for ( int y = 0; y < 8; ++y )
+			{
+				for ( int x = 0; x < 8; ++x )
+				{
+					if ( b3IsVoxelSolid( field, x, y, z ) == false )
+					{
+						continue;
+					}
+
+					b3Vec3 corners[8];
+					for ( int i = 0; i < 8; ++i )
+					{
+						corners[i] = b3Mul( field->scale, (b3Vec3){ (float)( x + ( i & 1 ) ), (float)( y + ( ( i >> 1 ) & 1 ) ),
+																	(float)( z + ( i >> 2 ) ) } );
+					}
+
+					b3ShapeCastPairInput pairInput = { 0 };
+					pairInput.proxyA = (b3ShapeProxy){ corners, 8, 0.0f };
+					pairInput.proxyB = (b3ShapeProxy){ &center, 1, radius };
+					pairInput.transform = b3Transform_identity;
+					pairInput.translationB = translation;
+					pairInput.maxFraction = 1.0f;
+					pairInput.canEncroach = false;
+					b3CastOutput pairOutput = b3ShapeCast( &pairInput );
+					if ( pairOutput.hit && pairOutput.fraction < best )
+					{
+						best = pairOutput.fraction;
+					}
+				}
+			}
+		}
+
+		ENSURE( output.hit == ( best < FLT_MAX ) );
+		if ( output.hit )
+		{
+			ENSURE_SMALL( output.fraction - best, 2e-3f );
+			hitCount += 1;
+		}
+	}
+
+	ENSURE( hitCount > 30 );
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
 int VoxelFieldTest( void )
 {
 	RUN_SUBTEST( VoxelFieldCreate );
@@ -627,6 +744,8 @@ int VoxelFieldTest( void )
 	RUN_SUBTEST( VoxelQuerySorted );
 	RUN_SUBTEST( VoxelRayCastFloor );
 	RUN_SUBTEST( VoxelRayCastBruteForce );
+	RUN_SUBTEST( VoxelShapeCastFloor );
+	RUN_SUBTEST( VoxelShapeCastBruteForce );
 
 	return 0;
 }
