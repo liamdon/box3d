@@ -601,6 +601,10 @@ B3_API b3CastOutput b3RayCastMesh( const b3Mesh* shape, const b3RayCastInput* in
 /// Ray cast versus height field in local space. A thin surface with no interior, so there is no overlap case.
 B3_API b3CastOutput b3RayCastHeightField( const b3HeightFieldData* shape, const b3RayCastInput* input );
 
+/// Ray cast versus voxel field in local space. Only exposed faces are hit. A ray starting inside solid voxels
+/// passes through them and exits without a hit.
+B3_API b3CastOutput b3RayCastVoxelField( const b3VoxelFieldData* shape, const b3RayCastInput* input );
+
 /// Shape cast versus a sphere. Initial overlap is treated as a miss.
 B3_API b3CastOutput b3ShapeCastSphere( const b3Sphere* shape, const b3ShapeCastInput* input );
 

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "aabb.h"
+#include "algorithm.h"
 #include "core.h"
 #include "shape.h"
 
@@ -415,5 +416,178 @@ void b3QueryVoxelField( const b3VoxelFieldData* field, b3AABB bounds, b3MeshQuer
 				}
 			}
 		}
+	}
+}
+
+// Which triangle of a face contains a point on the face: 0 on the corner 1 side of the diagonal, otherwise 1
+static int b3GetVoxelFaceSubTriangle( const b3Vec3 corners[4], b3Vec3 point )
+{
+	b3Vec3 e1 = b3Sub( corners[1], corners[0] );
+	b3Vec3 e3 = b3Sub( corners[3], corners[0] );
+	b3Vec3 d = b3Sub( point, corners[0] );
+	float u = b3Dot( d, e1 ) / b3Dot( e1, e1 );
+	float v = b3Dot( d, e3 ) / b3Dot( e3, e3 );
+	return v > u ? 1 : 0;
+}
+
+static int b3GetVoxelTriangleIndex( const b3VoxelFieldData* field, int x, int y, int z, int face, b3Vec3 point )
+{
+	b3Vec3 corners[4];
+	b3GetVoxelFaceCorners( field, x, y, z, face, corners );
+	int voxelIndex = b3GetVoxelIndex( field, x, y, z );
+	return B3_TRIANGLES_PER_VOXEL * voxelIndex + 2 * face + b3GetVoxelFaceSubTriangle( corners, point );
+}
+
+b3CastOutput b3RayCastVoxelField( const b3VoxelFieldData* shape, const b3RayCastInput* input )
+{
+	b3CastOutput output = { 0 };
+
+	b3Vec3 p1 = input->origin;
+	b3Vec3 d = input->translation;
+
+	float p[3] = { p1.x, p1.y, p1.z };
+	float v[3] = { d.x, d.y, d.z };
+	float scale[3] = { shape->scale.x, shape->scale.y, shape->scale.z };
+	float lower[3] = { shape->aabb.lowerBound.x, shape->aabb.lowerBound.y, shape->aabb.lowerBound.z };
+	float upper[3] = { shape->aabb.upperBound.x, shape->aabb.upperBound.y, shape->aabb.upperBound.z };
+	int border = b3GetVoxelBorder( shape );
+	int counts[3] = { shape->countX, shape->countY, shape->countZ };
+
+	// Clip the ray against the interior bounds using slabs, keeping the entry axis. Fractions are in units
+	// of the input translation.
+	float minFraction = 0.0f;
+	float maxFraction = input->maxFraction;
+	int entryAxis = -1;
+	for ( int i = 0; i < 3; ++i )
+	{
+		if ( v[i] == 0.0f )
+		{
+			// Parallel to the slab
+			if ( p[i] < lower[i] || p[i] > upper[i] )
+			{
+				return output;
+			}
+
+			continue;
+		}
+
+		float inv = 1.0f / v[i];
+		float t1 = ( lower[i] - p[i] ) * inv;
+		float t2 = ( upper[i] - p[i] ) * inv;
+		if ( t1 > t2 )
+		{
+			B3_SWAP( t1, t2 );
+		}
+
+		if ( t1 > minFraction )
+		{
+			minFraction = t1;
+			entryAxis = i;
+		}
+
+		maxFraction = b3MinFloat( maxFraction, t2 );
+		if ( minFraction > maxFraction )
+		{
+			return output;
+		}
+	}
+
+	// The voxel containing the clipped start point, clamped to the interior to absorb round-off
+	b3Vec3 start = b3MulAdd( p1, minFraction, d );
+	float startv[3] = { start.x, start.y, start.z };
+	int cell[3];
+	int step[3];
+	float nextFraction[3];
+	float deltaFraction[3];
+	for ( int i = 0; i < 3; ++i )
+	{
+		cell[i] = b3ClampInt( b3GetVoxelCoordinate( startv[i], scale[i], counts[i] ), border, counts[i] - 1 - border );
+
+		// Fraction at which the ray crosses the next voxel boundary on this axis, and the fraction per voxel
+		if ( v[i] > 0.0f )
+		{
+			step[i] = 1;
+			deltaFraction[i] = scale[i] / v[i];
+			nextFraction[i] = ( scale[i] * (float)( cell[i] + 1 ) - p[i] ) / v[i];
+		}
+		else if ( v[i] < 0.0f )
+		{
+			step[i] = -1;
+			deltaFraction[i] = -scale[i] / v[i];
+			nextFraction[i] = ( scale[i] * (float)cell[i] - p[i] ) / v[i];
+		}
+		else
+		{
+			step[i] = 0;
+			deltaFraction[i] = FLT_MAX;
+			nextFraction[i] = FLT_MAX;
+		}
+	}
+
+	// A solid voxel is hit when the previous voxel was empty. When the ray enters through the bounds the
+	// previous voxel is the one across the entry face, which is a border voxel or outside the field.
+	bool previousEmpty;
+	if ( entryAxis >= 0 )
+	{
+		int previous[3] = { cell[0], cell[1], cell[2] };
+		previous[entryAxis] -= step[entryAxis];
+		previousEmpty = b3IsVoxelSolid( shape, previous[0], previous[1], previous[2] ) == false;
+	}
+	else
+	{
+		previousEmpty = b3IsVoxelSolid( shape, cell[0], cell[1], cell[2] ) == false;
+	}
+
+	int lastAxis = entryAxis;
+	float fraction = minFraction;
+
+	for ( ;; )
+	{
+		bool solid = b3IsVoxelSolid( shape, cell[0], cell[1], cell[2] );
+		if ( solid && previousEmpty && lastAxis >= 0 )
+		{
+			// Entered a solid voxel through an exposed face
+			int face = 2 * lastAxis + ( step[lastAxis] > 0 ? 0 : 1 );
+			const int* n = b3_faceNormals[face];
+			b3Vec3 point = b3MulAdd( p1, fraction, d );
+
+			output.normal = (b3Vec3){ (float)n[0], (float)n[1], (float)n[2] };
+			output.point = point;
+			output.fraction = fraction;
+			output.triangleIndex = b3GetVoxelTriangleIndex( shape, cell[0], cell[1], cell[2], face, point );
+			output.materialIndex = b3GetVoxelFieldMaterial( shape, output.triangleIndex );
+			output.hit = true;
+			return output;
+		}
+
+		previousEmpty = solid == false;
+
+		// Advance to the next voxel on the axis with the nearest boundary
+		int axis = 0;
+		if ( nextFraction[1] < nextFraction[axis] )
+		{
+			axis = 1;
+		}
+
+		if ( nextFraction[2] < nextFraction[axis] )
+		{
+			axis = 2;
+		}
+
+		fraction = nextFraction[axis];
+		if ( fraction > maxFraction )
+		{
+			return output;
+		}
+
+		cell[axis] += step[axis];
+		if ( cell[axis] < border || cell[axis] > counts[axis] - 1 - border )
+		{
+			return output;
+		}
+
+		nextFraction[axis] += deltaFraction[axis];
+		lastAxis = axis;
+		output.iterations += 1;
 	}
 }

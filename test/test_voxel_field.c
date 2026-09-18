@@ -3,7 +3,8 @@
 
 #include "test_macros.h"
 
-// b3GetVoxelFieldTriangle is internal
+// b3GetVoxelFieldTriangle and b3RayCastAABB are internal
+#include "aabb.h"
 #include "shape.h"
 
 #include "box3d/box3d.h"
@@ -474,6 +475,144 @@ static int VoxelQuerySorted( void )
 	return 0;
 }
 
+static int VoxelRayCastFloor( void )
+{
+	b3VoxelFieldData* field = MakeFloorField( 8, 4, 8, 2, false );
+
+	// Straight down onto the top of voxel (3, 1, 5)
+	b3RayCastInput input = { { 3.5f, 10.0f, 5.5f }, { 0.0f, -20.0f, 0.0f }, 1.0f };
+	b3CastOutput output = b3RayCastVoxelField( field, &input );
+	ENSURE( output.hit );
+	ENSURE_SMALL( output.fraction - 0.4f, 1e-5f );
+	ENSURE_SMALL( output.point.y - 2.0f, 1e-4f );
+	ENSURE_SMALL( output.normal.y - 1.0f, 1e-5f );
+	int voxelIndex = output.triangleIndex / 12;
+	int face = ( output.triangleIndex - 12 * voxelIndex ) >> 1;
+	ENSURE( voxelIndex == 3 + 8 * ( 1 + 4 * 5 ) );
+	ENSURE( face == 3 );
+	ENSURE( output.materialIndex == 0 );
+
+	// Sideways into the -x wall of the floor from outside the field
+	input = (b3RayCastInput){ { -5.0f, 1.5f, 2.5f }, { 10.0f, 0.0f, 0.0f }, 1.0f };
+	output = b3RayCastVoxelField( field, &input );
+	ENSURE( output.hit );
+	ENSURE_SMALL( output.fraction - 0.5f, 1e-5f );
+	ENSURE_SMALL( output.normal.x + 1.0f, 1e-5f );
+
+	// Miss: above the floor, horizontal
+	input = (b3RayCastInput){ { -5.0f, 3.0f, 2.5f }, { 20.0f, 0.0f, 0.0f }, 1.0f };
+	output = b3RayCastVoxelField( field, &input );
+	ENSURE( output.hit == false );
+
+	// Start inside the solid floor pointing up: the ray leaves through internal solid, then
+	// exits into air. No exposed face faces the ray, so no hit.
+	input = (b3RayCastInput){ { 3.5f, 0.5f, 5.5f }, { 0.0f, 10.0f, 0.0f }, 1.0f };
+	output = b3RayCastVoxelField( field, &input );
+	ENSURE( output.hit == false );
+
+	// Max fraction limits the cast
+	input = (b3RayCastInput){ { 3.5f, 10.0f, 5.5f }, { 0.0f, -20.0f, 0.0f }, 0.3f };
+	output = b3RayCastVoxelField( field, &input );
+	ENSURE( output.hit == false );
+
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
+static float RandomFloat( uint32_t* state, float lower, float upper )
+{
+	*state = 1664525u * *state + 1013904223u;
+	float u = (float)( *state >> 8 ) * ( 1.0f / 16777216.0f );
+	return lower + ( upper - lower ) * u;
+}
+
+// Deterministic pseudo random field for brute force comparisons
+static b3VoxelFieldData* MakeRandomField( int count, uint32_t seed, float fill )
+{
+	int total = count * count * count;
+	uint8_t* voxels = calloc( total, 1 );
+	uint32_t state = seed;
+	for ( int i = 0; i < total; ++i )
+	{
+		voxels[i] = RandomFloat( &state, 0.0f, 1.0f ) < fill ? 1 : 0;
+	}
+
+	b3VoxelFieldDef def = { 0 };
+	def.voxels = voxels;
+	def.scale = (b3Vec3){ 1.0f, 0.5f, 1.5f };
+	def.countX = def.countY = def.countZ = count;
+	b3VoxelFieldData* field = b3CreateVoxelField( &def );
+	free( voxels );
+	return field;
+}
+
+static bool IsPointInSolid( const b3VoxelFieldData* field, b3Vec3 p )
+{
+	int x = (int)floorf( p.x / field->scale.x );
+	int y = (int)floorf( p.y / field->scale.y );
+	int z = (int)floorf( p.z / field->scale.z );
+	return b3IsVoxelSolid( field, x, y, z );
+}
+
+static int VoxelRayCastBruteForce( void )
+{
+	b3VoxelFieldData* field = MakeRandomField( 8, 12345u, 0.3f );
+	uint32_t state = 777u;
+	int hitCount = 0;
+
+	for ( int trial = 0; trial < 300; ++trial )
+	{
+		b3Vec3 origin = { RandomFloat( &state, -4.0f, 12.0f ), RandomFloat( &state, -2.0f, 6.0f ),
+						  RandomFloat( &state, -6.0f, 18.0f ) };
+		if ( IsPointInSolid( field, origin ) )
+		{
+			continue;
+		}
+
+		b3Vec3 translation = { RandomFloat( &state, -20.0f, 20.0f ), RandomFloat( &state, -10.0f, 10.0f ),
+							   RandomFloat( &state, -30.0f, 30.0f ) };
+		b3RayCastInput input = { origin, translation, 1.0f };
+		b3CastOutput output = b3RayCastVoxelField( field, &input );
+
+		// Brute force: the first solid voxel box hit along the ray. The origin is in air, so the
+		// entry face of that box is exposed.
+		float best = FLT_MAX;
+		b3Vec3 p2 = b3Add( origin, translation );
+		for ( int z = 0; z < 8; ++z )
+		{
+			for ( int y = 0; y < 8; ++y )
+			{
+				for ( int x = 0; x < 8; ++x )
+				{
+					if ( b3IsVoxelSolid( field, x, y, z ) == false )
+					{
+						continue;
+					}
+
+					b3AABB box = { b3Mul( field->scale, (b3Vec3){ (float)x, (float)y, (float)z } ),
+								   b3Mul( field->scale, (b3Vec3){ (float)x + 1, (float)y + 1, (float)z + 1 } ) };
+					float t1 = 0.0f, t2 = 1.0f;
+					if ( b3RayCastAABB( box, origin, p2, &t1, &t2 ) && t1 < best )
+					{
+						best = t1;
+					}
+				}
+			}
+		}
+
+		ENSURE( output.hit == ( best < FLT_MAX ) );
+		if ( output.hit )
+		{
+			ENSURE_SMALL( output.fraction - best, 1e-4f );
+			hitCount += 1;
+		}
+	}
+
+	ENSURE( hitCount > 50 );
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
 int VoxelFieldTest( void )
 {
 	RUN_SUBTEST( VoxelFieldCreate );
@@ -486,6 +625,8 @@ int VoxelFieldTest( void )
 	RUN_SUBTEST( VoxelEdgeFlags );
 	RUN_SUBTEST( VoxelMaterial );
 	RUN_SUBTEST( VoxelQuerySorted );
+	RUN_SUBTEST( VoxelRayCastFloor );
+	RUN_SUBTEST( VoxelRayCastBruteForce );
 
 	return 0;
 }
