@@ -458,6 +458,9 @@ typedef enum b3ShapeType
 	/// A sphere with an offset
 	b3_sphereShape,
 
+	/// A grid of unit cubes useful for block worlds
+	b3_voxelShape,
+
 	/// The number of shape types
 	b3_shapeTypeCount
 } b3ShapeType;
@@ -2384,6 +2387,93 @@ typedef struct b3HeightFieldData
 /**@}*/ // height_field
 
 /**
+ * @defgroup voxel_field Voxel Field
+ * @brief Voxel field collision shape
+ * @{
+ */
+
+/// Data used to create a voxel field. No pointers are held to this data.
+typedef struct b3VoxelFieldDef
+{
+	/// Voxel occupancy. One byte per voxel, non-zero for solid.
+	/// count = countX * countY * countZ
+	/// index = x + countX * (y + countY * z)
+	const uint8_t* voxels;
+
+	/// Optional voxel material. One byte per voxel. Indexes into b3ShapeDef::materials.
+	/// May be NULL, in which case every voxel uses material zero.
+	const uint8_t* materialIndices;
+
+	/// The voxel size. All components must be positive values.
+	b3Vec3 scale;
+
+	/// The number of voxels along the x-axis, including the border.
+	int countX;
+
+	/// The number of voxels along the y-axis, including the border.
+	int countY;
+
+	/// The number of voxels along the z-axis, including the border.
+	int countZ;
+
+	/// The outermost layer of voxels is a border. Border voxels never collide, they only hide
+	/// the faces of adjacent interior voxels. Fill the border with the neighboring voxels to
+	/// seam voxel fields placed next to each other.
+	bool hasBorder;
+} b3VoxelFieldDef;
+
+/// 64-bit voxel field version. Useful for validating serialized data.
+#define B3_VOXEL_FIELD_VERSION 0x5A3C9E17D2B4F681ull
+
+/// A voxel field with bit-packed storage.
+/// @note This data structure has data hanging off the end and cannot be directly copied.
+typedef struct b3VoxelFieldData
+{
+	/// Version must be first and match B3_VOXEL_FIELD_VERSION
+	uint64_t version;
+
+	/// Hash of this voxel field (this field is zero when the hash is computed).
+	uint64_t hash;
+
+	/// The total number of bytes for this voxel field.
+	int byteCount;
+
+	/// The local axis-aligned bounding box. The border is excluded.
+	b3AABB aabb;
+
+	/// The voxel size.
+	b3Vec3 scale;
+
+	/// The number of voxels along the local x-axis, including the border.
+	int32_t countX;
+
+	/// The number of voxels along the local y-axis, including the border.
+	int32_t countY;
+
+	/// The number of voxels along the local z-axis, including the border.
+	int32_t countZ;
+
+	/// The number of solid voxels, excluding the border.
+	int32_t solidCount;
+
+	/// Offset of the occupancy bit array in bytes from the struct address.
+	/// uint8_t, one bit per voxel.
+	int32_t bitsOffset;
+
+	/// Offset of the material index array in bytes from the struct address.
+	/// uint8_t, one per voxel. Zero if the field has no materials.
+	int32_t materialOffset;
+
+	/// Is the outer layer of voxels a non-colliding border?
+	uint8_t hasBorder;
+
+	/// Explicit padding.
+	uint8_t padding[7];
+} b3VoxelFieldData;
+
+/**@}*/ // voxel_field
+
+/**
  * @defgroup compound Compound
  * @brief Compound collision shape
  * @{
@@ -3017,6 +3107,7 @@ typedef struct b3DebugShape
 		const b3HullData* hull;				  ///< Convex hull shape.
 		const b3Mesh* mesh;					  ///< Mesh shape with scale.
 		const b3Sphere* sphere;				  ///< Sphere shape.
+		const b3VoxelFieldData* voxelField;	  ///< Voxel field shape.
 	};
 } b3DebugShape;
 

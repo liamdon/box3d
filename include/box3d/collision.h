@@ -423,6 +423,54 @@ B3_API b3HeightFieldData* b3LoadHeightField( const char* fileName );
 /**@}*/ // height_field
 
 /**
+ * @addtogroup voxel_field
+ * @{
+ */
+
+/// Get read only voxel occupancy bits. One bit per voxel.
+B3_INLINE const uint8_t* b3GetVoxelFieldBits( const b3VoxelFieldData* field )
+{
+	return (const uint8_t*)( (intptr_t)field + field->bitsOffset );
+}
+
+/// Get read only material indices. One uint8_t per voxel. Returns NULL if the field has no materials.
+B3_INLINE const uint8_t* b3GetVoxelFieldMaterialIndices( const b3VoxelFieldData* field )
+{
+	if ( field->materialOffset == 0 )
+	{
+		return NULL;
+	}
+
+	return (const uint8_t*)( (intptr_t)field + field->materialOffset );
+}
+
+/// Is the voxel solid? Voxels outside the field are empty.
+B3_INLINE bool b3IsVoxelSolid( const b3VoxelFieldData* field, int x, int y, int z )
+{
+	if ( x < 0 || y < 0 || z < 0 || x >= field->countX || y >= field->countY || z >= field->countZ )
+	{
+		return false;
+	}
+
+	int index = x + field->countX * ( y + field->countY * z );
+	const uint8_t* bits = b3GetVoxelFieldBits( field );
+	return ( bits[index >> 3] & ( 1 << ( index & 7 ) ) ) != 0;
+}
+
+/// Create a generic voxel field.
+B3_API b3VoxelFieldData* b3CreateVoxelField( const b3VoxelFieldDef* def );
+
+/// Create a wave as a voxel field. The offsets shift the wave so that fields created with
+/// adjacent offsets tile seamlessly.
+B3_API b3VoxelFieldData* b3CreateVoxelWave( int countX, int countY, int countZ, int offsetX, int offsetZ, b3Vec3 scale,
+											float frequencyX, float frequencyZ, bool hasBorder );
+
+/// Destroy a voxel field.
+B3_API void b3DestroyVoxelField( b3VoxelFieldData* field );
+
+/**@}*/ // voxel_field
+
+/**
  * @addtogroup compound
  * @{
  */
@@ -492,6 +540,9 @@ B3_API b3AABB b3ComputeMeshAABB( const b3MeshData* shape, b3Transform transform,
 
 /// Compute the bounding box of a transformed height-field
 B3_API b3AABB b3ComputeHeightFieldAABB( const b3HeightFieldData* shape, b3Transform transform );
+
+/// Compute the bounding box of a transformed voxel field
+B3_API b3AABB b3ComputeVoxelFieldAABB( const b3VoxelFieldData* shape, b3Transform transform );
 
 /// Compute the bounding box of a compound
 B3_API b3AABB b3ComputeCompoundAABB( const b3CompoundData* shape, b3Transform transform );
