@@ -636,6 +636,14 @@ B3_API void b3QueryMesh( const b3Mesh* mesh, const b3AABB bounds, b3MeshQueryFcn
 /// @param context the context sent to the user function.
 B3_API void b3QueryHeightField( const b3HeightFieldData* heightField, b3AABB bounds, b3MeshQueryFcn* fcn, void* context );
 
+/// Query a voxel field for exposed faces overlapping a bounding box in local space. Each face yields two triangles
+/// with increasing triangle indices. Return false from the callback to stop the query.
+/// @param field the voxel field to query
+/// @param bounds the bounding box in local space
+/// @param fcn a user function to collect triangles
+/// @param context the context sent to the user function.
+B3_API void b3QueryVoxelField( const b3VoxelFieldData* field, b3AABB bounds, b3MeshQueryFcn* fcn, void* context );
+
 /// Compute the closest points between two shapes represented as point clouds.
 /// b3SimplexCache cache is input/output. On the first call set b3SimplexCache.count to zero.
 /// The query runs in frame A, so the witness points and normal are returned in frame A.

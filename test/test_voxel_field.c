@@ -413,6 +413,67 @@ static int VoxelMaterial( void )
 	return 0;
 }
 
+typedef struct QueryContext
+{
+	int indices[512];
+	int count;
+	int stopAt;
+} QueryContext;
+
+static bool CollectTriangles( b3Vec3 a, b3Vec3 b, b3Vec3 c, int triangleIndex, void* context )
+{
+	MAYBE_UNUSED( a );
+	MAYBE_UNUSED( b );
+	MAYBE_UNUSED( c );
+	QueryContext* query = context;
+	query->indices[query->count++] = triangleIndex;
+	return query->count < query->stopAt;
+}
+
+static int VoxelQuerySorted( void )
+{
+	// 6x6x6 bordered field, floor 3 high: the interior floor is 4x4x2
+	b3VoxelFieldData* field = MakeFloorField( 6, 6, 6, 3, true );
+
+	QueryContext query = { 0 };
+	query.stopAt = 512;
+	b3AABB bounds = { { -10.0f, -10.0f, -10.0f }, { 10.0f, 10.0f, 10.0f } };
+	b3QueryVoxelField( field, bounds, CollectTriangles, &query );
+
+	// Only the 16 top faces are exposed. Every side face of an interior floor voxel touches a
+	// solid interior neighbor or a solid border voxel, and every bottom face touches the solid
+	// border row at y = 0.
+	ENSURE( query.count == 2 * 16 );
+
+	for ( int i = 1; i < query.count; ++i )
+	{
+		ENSURE( query.indices[i] > query.indices[i - 1] );
+	}
+
+	// Every reported triangle is a +y face (face 3)
+	for ( int i = 0; i < query.count; ++i )
+	{
+		int face = ( query.indices[i] % 12 ) >> 1;
+		ENSURE( face == 3 );
+	}
+
+	// A bounds that touches only one voxel column reports two triangles
+	QueryContext one = { 0 };
+	one.stopAt = 512;
+	b3AABB small = { { 2.25f, 2.9f, 2.25f }, { 2.75f, 3.5f, 2.75f } };
+	b3QueryVoxelField( field, small, CollectTriangles, &one );
+	ENSURE( one.count == 2 );
+
+	// Returning false stops the query
+	QueryContext stop = { 0 };
+	stop.stopAt = 3;
+	b3QueryVoxelField( field, bounds, CollectTriangles, &stop );
+	ENSURE( stop.count == 3 );
+
+	b3DestroyVoxelField( field );
+	return 0;
+}
+
 int VoxelFieldTest( void )
 {
 	RUN_SUBTEST( VoxelFieldCreate );
@@ -424,6 +485,7 @@ int VoxelFieldTest( void )
 	RUN_SUBTEST( VoxelEdgeNeighbors );
 	RUN_SUBTEST( VoxelEdgeFlags );
 	RUN_SUBTEST( VoxelMaterial );
+	RUN_SUBTEST( VoxelQuerySorted );
 
 	return 0;
 }

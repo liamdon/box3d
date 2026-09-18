@@ -70,6 +70,11 @@ static const int b3_faceEdgeNeighbors[B3_VOXEL_FACE_COUNT][4][3] = {
 	{ { 0, -1, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { -1, 0, 0 } }, // +z
 };
 
+static inline int b3GetVoxelIndex( const b3VoxelFieldData* field, int x, int y, int z )
+{
+	return x + field->countX * ( y + field->countY * z );
+}
+
 static inline int b3GetVoxelCornerIndex( const b3VoxelFieldData* field, int x, int y, int z )
 {
 	return x + ( field->countX + 1 ) * ( y + ( field->countY + 1 ) * z );
@@ -78,6 +83,59 @@ static inline int b3GetVoxelCornerIndex( const b3VoxelFieldData* field, int x, i
 static inline b3Vec3 b3GetVoxelCorner( const b3VoxelFieldData* field, int x, int y, int z )
 {
 	return b3Mul( field->scale, (b3Vec3){ (float)x, (float)y, (float)z } );
+}
+
+static inline int b3GetVoxelBorder( const b3VoxelFieldData* field )
+{
+	return field->hasBorder ? 1 : 0;
+}
+
+typedef struct b3VoxelRange
+{
+	int x1, y1, z1;
+	int x2, y2, z2;
+} b3VoxelRange;
+
+// Convert a local coordinate to a voxel coordinate. Clamped in float first so that huge bounds
+// cannot overflow the integer conversion. The result is at most one voxel outside the field.
+static inline int b3GetVoxelCoordinate( float value, float scale, int count )
+{
+	return (int)floorf( b3ClampFloat( value / scale, -1.0f, (float)count ) );
+}
+
+// The interior voxel range overlapping the local bounds. Empty when x1 > x2 on any axis.
+static b3VoxelRange b3GetVoxelRange( const b3VoxelFieldData* field, b3AABB bounds )
+{
+	int border = b3GetVoxelBorder( field );
+	b3Vec3 scale = field->scale;
+	b3Vec3 lower = bounds.lowerBound;
+	b3Vec3 upper = bounds.upperBound;
+
+	b3VoxelRange range;
+	range.x1 = b3MaxInt( b3GetVoxelCoordinate( lower.x, scale.x, field->countX ), border );
+	range.y1 = b3MaxInt( b3GetVoxelCoordinate( lower.y, scale.y, field->countY ), border );
+	range.z1 = b3MaxInt( b3GetVoxelCoordinate( lower.z, scale.z, field->countZ ), border );
+	range.x2 = b3MinInt( b3GetVoxelCoordinate( upper.x, scale.x, field->countX ), field->countX - 1 - border );
+	range.y2 = b3MinInt( b3GetVoxelCoordinate( upper.y, scale.y, field->countY ), field->countY - 1 - border );
+	range.z2 = b3MinInt( b3GetVoxelCoordinate( upper.z, scale.z, field->countZ ), field->countZ - 1 - border );
+	return range;
+}
+
+// A face is exposed when the voxel across it is empty
+static inline bool b3IsVoxelFaceExposed( const b3VoxelFieldData* field, int x, int y, int z, int face )
+{
+	const int* n = b3_faceNormals[face];
+	return b3IsVoxelSolid( field, x + n[0], y + n[1], z + n[2] ) == false;
+}
+
+// The four corners of a face in local space, counter-clockwise viewed from outside
+static inline void b3GetVoxelFaceCorners( const b3VoxelFieldData* field, int x, int y, int z, int face, b3Vec3 corners[4] )
+{
+	for ( int i = 0; i < 4; ++i )
+	{
+		const int* offset = b3_faceCorners[face][i];
+		corners[i] = b3GetVoxelCorner( field, x + offset[0], y + offset[1], z + offset[2] );
+	}
 }
 
 b3VoxelFieldData* b3CreateVoxelField( const b3VoxelFieldDef* def )
@@ -314,4 +372,48 @@ int b3GetVoxelFieldMaterial( const b3VoxelFieldData* field, int triangleIndex )
 	}
 
 	return materialIndices[triangleIndex / B3_TRIANGLES_PER_VOXEL];
+}
+
+void b3QueryVoxelField( const b3VoxelFieldData* field, b3AABB bounds, b3MeshQueryFcn* fcn, void* context )
+{
+	b3VoxelRange range = b3GetVoxelRange( field, bounds );
+
+	// Outer loop on z, then y, then x so that triangle indices increase monotonically.
+	for ( int z = range.z1; z <= range.z2; ++z )
+	{
+		for ( int y = range.y1; y <= range.y2; ++y )
+		{
+			for ( int x = range.x1; x <= range.x2; ++x )
+			{
+				if ( b3IsVoxelSolid( field, x, y, z ) == false )
+				{
+					continue;
+				}
+
+				int voxelIndex = b3GetVoxelIndex( field, x, y, z );
+
+				for ( int face = 0; face < B3_VOXEL_FACE_COUNT; ++face )
+				{
+					if ( b3IsVoxelFaceExposed( field, x, y, z, face ) == false )
+					{
+						continue;
+					}
+
+					b3Vec3 corners[4];
+					b3GetVoxelFaceCorners( field, x, y, z, face, corners );
+					int triangleIndex = B3_TRIANGLES_PER_VOXEL * voxelIndex + 2 * face;
+
+					if ( fcn( corners[0], corners[1], corners[2], triangleIndex, context ) == false )
+					{
+						return;
+					}
+
+					if ( fcn( corners[0], corners[2], corners[3], triangleIndex + 1, context ) == false )
+					{
+						return;
+					}
+				}
+			}
+		}
+	}
 }
