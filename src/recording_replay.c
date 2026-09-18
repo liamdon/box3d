@@ -728,6 +728,13 @@ static void* b3RecGetLiveHeightField( b3RegistrySlot* slot )
 	return slot->bytes;
 }
 
+static void* b3RecGetLiveVoxelField( b3RegistrySlot* slot )
+{
+	// Self-contained blob used by reference, like b3RecGetLiveMesh. The bytes already are a
+	// valid b3VoxelFieldData with no pointer fixup, so hand them back directly.
+	return slot->bytes;
+}
+
 static void* b3RecGetLiveCompound( b3RegistrySlot* slot )
 {
 	if ( slot->live != NULL )
@@ -1062,6 +1069,33 @@ static void b3RecDispatch_CreateHeightFieldShape( const b3RecArgs_CreateHeightFi
 	}
 	b3BodyId bodyId = b3RecMakeBodyId( rdr, a->body );
 	b3ShapeId gotId = b3CreateHeightFieldShape( bodyId, &a->def, hf );
+	b3RecCheckShapeId( rdr, gotId, recId );
+}
+
+static void b3RecDispatch_CreateVoxelFieldShape( const b3RecArgs_CreateVoxelFieldShape* a, b3RecReader* rdr )
+{
+	b3ShapeId recId = b3RecR_SHAPEID( rdr );
+	if ( !rdr->ok )
+	{
+		return;
+	}
+	uint32_t id = a->geometryId;
+	if ( id >= (uint32_t)rdr->slotCount )
+	{
+		printf( "b3ReplayFile: voxel field geometryId %u out of range\n", id );
+		rdr->ok = false;
+		return;
+	}
+	b3RegistrySlot* slot = rdr->slots + id;
+	const b3VoxelFieldData* field = (const b3VoxelFieldData*)b3RecGetLiveVoxelField( slot );
+	if ( field == NULL )
+	{
+		printf( "b3ReplayFile: voxel field geometry %u is corrupt\n", id );
+		rdr->ok = false;
+		return;
+	}
+	b3BodyId bodyId = b3RecMakeBodyId( rdr, a->body );
+	b3ShapeId gotId = b3CreateVoxelFieldShape( bodyId, &a->def, field );
 	b3RecCheckShapeId( rdr, gotId, recId );
 }
 
@@ -2519,7 +2553,7 @@ static void b3RecFreeSlots( b3RegistrySlot* slots, int slotCount )
 		{
 			switch ( slot->kind )
 			{
-				// Mesh and height field have no separate live object; they borrow the bytes freed below.
+				// Mesh, height field, and voxel field have no separate live object; they borrow the bytes freed below.
 				case b3_geometryCompound:
 					b3Free( slot->live, (size_t)slot->byteCount );
 					break;

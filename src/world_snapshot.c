@@ -594,6 +594,13 @@ static void b3SerShapes( b3RecBuffer* buf, b3World* world, b3Recording* rec )
 				b3SnapW_U32( buf, gid );
 				break;
 			}
+			case b3_voxelShape:
+			{
+				b3SnapW_I32( buf, (int)b3_voxelShape );
+				uint32_t gid = b3RecInternVoxelField( rec, src->voxelField );
+				b3SnapW_U32( buf, gid );
+				break;
+			}
 			case b3_compoundShape:
 			{
 				b3SnapW_I32( buf, (int)b3_compoundShape );
@@ -766,6 +773,23 @@ static void b3DesShapes( b3SnapReader* r, b3World* world, b3RecReader* rdr )
 				b3RegistrySlot* slot = rdr->slots + gid;
 				// Self-contained blob used by reference; point straight at the pristine bytes.
 				dst->heightField = (const b3HeightFieldData*)slot->bytes;
+				break;
+			}
+			case b3_voxelShape:
+			{
+				uint32_t gid = b3SnapR_U32( r );
+				if ( !r->ok )
+				{
+					break;
+				}
+				if ( rdr == NULL || gid >= (uint32_t)rdr->slotCount )
+				{
+					r->ok = false;
+					break;
+				}
+				b3RegistrySlot* slot = rdr->slots + gid;
+				// Self-contained blob used by reference; point straight at the pristine bytes.
+				dst->voxelField = (const b3VoxelFieldData*)slot->bytes;
 				break;
 			}
 			case b3_compoundShape:

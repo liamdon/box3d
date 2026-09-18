@@ -472,6 +472,16 @@ b3ShapeId b3CreateVoxelFieldShape( b3BodyId bodyId, const b3ShapeDef* def, const
 	}
 
 	b3ShapeId shapeId = b3CreateShape( bodyId, def, field, b3_voxelShape, b3Transform_identity, b3Vec3_one, false );
+	if ( shapeId.index1 != 0 )
+	{
+		b3World* world = b3GetUnlockedWorld( bodyId.world0 );
+		if ( world != NULL && world->recording != NULL )
+		{
+			uint32_t geometryId = b3RecInternVoxelField( world->recording, field );
+			b3RecArgs_CreateVoxelFieldShape createArgs = { bodyId, *def, geometryId };
+			b3RecWriteRet_CreateVoxelFieldShape( world->recording, &createArgs, shapeId );
+		}
+	}
 	return shapeId;
 }
 
