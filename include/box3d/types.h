@@ -475,7 +475,8 @@ typedef struct b3ShapeDef
 	/// Use this to store application specific shape data.
 	void* userData;
 
-	/// Surface material used on mesh shapes per triangle. Ignored for convex shapes. Ignored for compound shapes.
+	/// Surface material used on mesh shapes per triangle, height fields per cell, and voxel fields per voxel.
+	/// Ignored for convex shapes. Ignored for compound shapes.
 	b3SurfaceMaterial* materials;
 
 	/// Surface material count.

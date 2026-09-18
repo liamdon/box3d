@@ -15,7 +15,7 @@ Box3D is a 3D physics engine for games.
 
 - Continuous collision detection
 - Contact events
-- Convex hulls, capsules, spheres, triangle meshes, and height fields
+- Convex hulls, capsules, spheres, triangle meshes, height fields, and voxel fields
 - Multiple shapes per body
 - Collision filtering
 - Ray casts, shape casts, and overlap queries
